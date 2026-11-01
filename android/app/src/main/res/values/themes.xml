@@ -1,0 +1,7 @@
+<resources>
+    <style name="Theme.SecondShooter" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/background</item>
+    </style>
+    <color name="background">#0F1114</color>
+    <color name="icon_background">#15181C</color>
+</resources>

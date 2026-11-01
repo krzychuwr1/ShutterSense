@@ -1,0 +1,28 @@
+{
+  "name": "second-shooter",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "dev:worker": "vite build && wrangler dev --port 8790",
+    "build": "npm run typecheck && vite build",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p worker/tsconfig.json && tsc --noEmit -p tools/tsconfig.json",
+    "test": "node --experimental-strip-types --no-warnings --test \"shared/**/*.test.ts\" \"ccapi/**/*.test.ts\" \"camsim/**/*.test.ts\" \"agent/**/*.test.ts\"",
+    "render-scenes": "node --experimental-strip-types --no-warnings tools/render-scenes.ts",
+    "prepare-scenes": "node --experimental-strip-types --no-warnings tools/prepare-scenes.ts",
+    "e2e": "node --experimental-strip-types --no-warnings tools/agent-e2e.ts",
+    "sim": "node --experimental-strip-types --no-warnings tools/sim-server.ts",
+    "deploy": "npm run build && wrangler deploy"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261031.1",
+    "@types/node": "^26.6.6",
+    "@types/pngjs": "^6.0.5",
+    "jpeg-js": "^0.4.4",
+    "pngjs": "^7.0.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.5",
+    "wrangler": "^4.156.0"
+  }
+}
