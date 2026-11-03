@@ -4,6 +4,7 @@
 //   POST /sim/scene {id}      switch scene (settings reset to that scene's starting point)
 //   GET  /sim/frame?w=600     what the camera's rear screen shows now
 //   GET  /sim/shot/<n>        a past shot's details
+//   POST /sim/reconnect       reconnect after the camera left the network (Wi-Fi disconnect, power off)
 
 import type { SimRequest, SimResponse, VirtualCamera } from "./camera.ts";
 import { SCENE_INFO } from "./scenes.ts";
@@ -19,6 +20,10 @@ export async function handleSim(cam: VirtualCamera, req: SimRequest): Promise<Si
     const id = (req.body as { id?: unknown } | undefined)?.id;
     if (typeof id !== "string" || !SCENE_INFO.some((s) => s.id === id)) return { status: 400, json: { message: "Unknown scene" } };
     await cam.setScene(id);
+    return { status: 200, json: cam.status() };
+  }
+  if (pathname === "/sim/reconnect" && m === "POST") {
+    cam.reconnect();
     return { status: 200, json: cam.status() };
   }
   if (pathname === "/sim/frame" && m === "GET") {

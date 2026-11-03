@@ -1,7 +1,8 @@
 // Turns generated scene layers (1536×1024 PNGs) into the simulator's assets
 // in web/public/scenes/<scene>/: resized to the scene size, opaque plates as
 // JPEG, cut-outs as PNG with alpha.
-//   npm run prepare-scenes -- <dir with backlit/, dog/, dinner/>
+//   npm run prepare-scenes -- <dir with a folder per scene> [scene ...]
+// (only the named scenes, or every scene with a folder in <dir>).
 
 import fs from "node:fs";
 import path from "node:path";
@@ -10,14 +11,16 @@ import { PNG } from "pngjs";
 import { SCENE_H, SCENE_W } from "../camsim/scenes.ts";
 
 const FILES: Record<string, Record<string, "jpg" | "png">> = {
-  backlit: { plate: "jpg", woman: "png" },
   dog: { plate: "jpg", dog: "png" },
   dinner: { room: "jpg", man: "png", table: "png" },
+  gym: { plate: "jpg", defender: "png", player: "png" },
+  concert: { plate: "jpg", band: "png", singer: "png", crowd: "png" },
+  group: { plate: "jpg", back: "png", middle: "png", front: "png" },
 };
 
-const src = process.argv[2];
+const [src, ...only] = process.argv.slice(2);
 if (!src) {
-  console.error("usage: npm run prepare-scenes -- <dir>");
+  console.error("usage: npm run prepare-scenes -- <dir> [scene ...]");
   process.exit(1);
 }
 
@@ -67,6 +70,7 @@ function resize(data: Uint8Array, w: number, h: number, ow: number, oh: number):
 }
 
 for (const [scene, layers] of Object.entries(FILES)) {
+  if (only.length ? !only.includes(scene) : !fs.existsSync(path.join(src, scene))) continue;
   const dir = path.join("web/public/scenes", scene);
   fs.mkdirSync(dir, { recursive: true });
   for (const [name, kind] of Object.entries(layers)) {

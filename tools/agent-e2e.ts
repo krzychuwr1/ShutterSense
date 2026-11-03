@@ -13,7 +13,7 @@ import { encodeJpegNode } from "./jpeg-node.ts";
 import { loadImageNode } from "./scene-files-node.ts";
 import { nodeImages } from "./image-node.ts";
 
-const [scene = "backlit", goal = "She's backlit, fix it", out = "e2e-out"] = process.argv.slice(2);
+const [scene = "concert", goal = "Shoot silently, but get rid of the dark stripes", out = "e2e-out"] = process.argv.slice(2);
 const base = process.env.WORKER ?? "http://127.0.0.1:8790";
 fs.mkdirSync(out, { recursive: true });
 

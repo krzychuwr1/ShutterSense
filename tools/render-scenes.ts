@@ -13,12 +13,21 @@ import { loadImageNode } from "./scene-files-node.ts";
 
 const out = process.argv[2];
 
+/** Exposure tweaks for a nicer thumbnail, in stops, + = brighter (a dark venue fools the meter into overexposing the singer). */
+const THUMB_BIAS: Record<string, number> = { concert: -1.3 };
+
 function shot(sc: Scene, w: number, mode: string) {
   const focus = sc.layers.find((l) => l.name === sc.subject.layer)!.depth;
-  const ev = meter(sc, mode, 0.1);
+  const ev = meter(sc, mode, 0.1) - (THUMB_BIAS[sc.id] ?? 0);
   const N = 2.8;
-  const t = (N * N) / 2 ** ev;
-  return { ev, t, r: render(sc, { w, N, t, iso: 100, dofN: N, focus, wbK: sc.lightK, pictureStyle: "standard", time: 0.1, motionBlur: true, shake: 0, seed: 1 }) };
+  let t = (N * N) / 2 ** ev;
+  let iso = 100;
+  // Freeze moving subjects: a fast shutter, with ISO making up the light.
+  if (sc.layers.some((l) => l.motion) && t > 1 / 500) {
+    iso = Math.round((100 * t) / (1 / 500));
+    t = 1 / 500;
+  }
+  return { ev, t, r: render(sc, { w, N, t, iso, dofN: N, focus, wbK: sc.lightK, pictureStyle: "standard", time: 0.1, motionBlur: true, shake: 0, seed: 1 }) };
 }
 
 const save = (file: string, r: { rgba: Uint8ClampedArray; w: number; h: number }, q: number) =>

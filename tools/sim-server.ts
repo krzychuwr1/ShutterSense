@@ -11,7 +11,7 @@ import { encodeJpegNode } from "./jpeg-node.ts";
 import { loadImageNode } from "./scene-files-node.ts";
 
 const port = Number(process.env.PORT ?? 8080);
-const scene = process.env.SCENE ?? "backlit";
+const scene = process.env.SCENE ?? "concert";
 const cam = await VirtualCamera.create({ encodeJpeg: encodeJpegNode, now: () => Date.now(), loadImage: loadImageNode }, scene);
 
 const PAGE = `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -47,12 +47,19 @@ const server = http.createServer(async (req, res) => {
     }
   }
   try {
-    const out = await handleSim(cam, { method: req.method ?? "GET", path: url, body });
+    const headers: Record<string, string> = {};
+    for (const k of ["range", "origin", "host"]) if (typeof req.headers[k] === "string") headers[k] = req.headers[k] as string;
+    const out = await handleSim(cam, { method: req.method ?? "GET", path: url, body, headers });
+    if (out.closed) {
+      // The camera left the network: drop the connection without an answer.
+      req.socket.destroy();
+      return;
+    }
     if (out.bytes) {
-      res.writeHead(out.status, { "content-type": out.contentType ?? "application/octet-stream", "content-length": out.bytes.length });
+      res.writeHead(out.status, { ...out.headers, "content-type": out.contentType ?? "application/octet-stream", "content-length": out.bytes.length });
       res.end(Buffer.from(out.bytes));
     } else {
-      res.writeHead(out.status, { "content-type": "application/json" });
+      res.writeHead(out.status, { ...out.headers, "content-type": "application/json" });
       res.end(JSON.stringify(out.json ?? {}));
     }
   } catch (e) {

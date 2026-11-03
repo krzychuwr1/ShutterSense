@@ -6,6 +6,7 @@
 // starting settings get it visibly wrong in a way a photographer would recognise.
 
 import { illuminant, toLinear } from "./color.ts";
+import type { Flicker } from "./flicker.ts";
 import { ellipse, fill, newLayer, type Layer } from "./paint.ts";
 
 export const SCENE_W = 1200;
@@ -18,9 +19,11 @@ export interface Lens {
   /** Widest and narrowest f-numbers. */
   maxAperture: number;
   minAperture: number;
+  /** Closest focus distance in metres. */
+  minFocus: number;
 }
 
-/** A plane seen at an angle (lawn, table top): distance by row is k / (y - horizon), in normalised rows, capped at `far`. */
+/** A plane seen at an angle (lawn, table top): distance by row is k / (y - horizon), in normalised rows, capped at `far` (the sky, or things standing on the surface). */
 export interface Ground {
   horizon: number;
   k: number;
@@ -35,6 +38,15 @@ export interface SceneLayer {
   layer: Layer;
   /** A subject crossing the frame: it moves back and forth between `range` (pixel offsets) at `speed` px/s. */
   motion?: { speed: number; range: [number, number]; pivotX: number };
+  /**
+   * How the layer is lit: radiance = reflectance × light[row] × tint. Lets
+   * the renderer recover reflectance, so added light (a flash) falls on the
+   * surfaces with their own colours.
+   */
+  light: Float32Array;
+  tint: [number, number, number];
+  /** The part of the layer's light (`share`, 0..1) that comes from a flickering source. */
+  flicker?: { light: Flicker; share: number };
 }
 
 export interface SceneSettings {
@@ -49,6 +61,8 @@ export interface SceneSettings {
   afoperation?: string;
   afmethod?: string;
   picturestyle?: string;
+  shuttermode?: string;
+  drive?: string;
 }
 
 export interface Scene {
@@ -106,6 +120,8 @@ interface LayerSpec {
   motion?: { speed: number; range: [number, number] };
   /** A soft contact shadow under the subject, moving with it. */
   shadow?: number;
+  /** Lit (wholly, or `share` of it) by a light that flickers. */
+  flicker?: { light: Flicker; share?: number };
 }
 
 interface SceneSpec extends Omit<Scene, "w" | "h" | "layers" | "subject"> {
@@ -113,29 +129,17 @@ interface SceneSpec extends Omit<Scene, "w" | "h" | "layers" | "subject"> {
   subject: { layer: string; face: boolean };
 }
 
+/**
+ * Old fluorescent tubes on magnetic ballasts, 50 Hz mains: a 100 Hz ripple
+ * of over ±50 % in brightness, deeper in blue than in red (the phosphors
+ * glow on for different times), so the light also turns warmer in each dip.
+ */
+const GYM_TUBES: Flicker = { name: "fluorescent tubes (50 Hz mains)", kind: "mains", hz: 100, depth: [0.5, 0.56, 0.75] };
+
+/** Dimmed LED stage lights: switched fully on and off 1310 times a second, on a quarter of the time. */
+const STAGE_LEDS: Flicker = { name: "dimmed LED stage lights", kind: "pwm", hz: 1310, duty: 0.25, floor: 0 };
+
 const SPECS: Record<string, SceneSpec> = {
-  backlit: {
-    id: "backlit",
-    title: "Backlit portrait",
-    blurb: "Golden hour, sun right behind her. The camera exposes for the sky.",
-    goals: ["She's backlit, fix it", "Portrait with a soft, dreamy background", "Keep the sunset colours but show her face"],
-    layers: [
-      {
-        name: "landscape", file: "scenes/backlit/plate.jpg", depth: 40, ground: { horizon: 0.55, k: 3.6, far: 2000 },
-        ev: [[0, 14.4], [0.45, 15], [0.53, 14.8], [0.555, 12.2], [1, 11.6]], kelvin: 5000, highlights: { knee: 0.82, gain: 40 },
-      },
-      { name: "person", file: "scenes/backlit/woman.png", depth: 2.6, ev: 9.4, kelvin: 6200, highlights: { knee: 0.9, gain: 3 } },
-    ],
-    lens: { name: "85mm F1.8", focal: 85, maxAperture: 1.8, minAperture: 22 },
-    subject: { layer: "person", face: true },
-    awbK: 5000,
-    lightK: 6200,
-    handheld: true,
-    initial: {
-      shootingmode: "av", av: "f5.6", tv: "1/250", iso: "auto", exposure: "+0.0", wb: "auto", colortemperature: 5200,
-      metering: "evaluative", afoperation: "oneshot", afmethod: "face+tracking", picturestyle: "auto",
-    },
-  },
   dog: {
     id: "dog",
     title: "Dog running in the park",
@@ -145,7 +149,7 @@ const SPECS: Record<string, SceneSpec> = {
       { name: "park", file: "scenes/dog/plate.jpg", depth: 15, ground: { horizon: 0.38, k: 4.3, far: 70 }, ev: 12, kelvin: 6600 },
       { name: "dog", file: "scenes/dog/dog.png", depth: 15, ev: 12, kelvin: 6600, motion: { speed: 1300, range: [-40, 360] }, shadow: 0.3 },
     ],
-    lens: { name: "70-200mm F2.8 at 200mm", focal: 200, maxAperture: 2.8, minAperture: 32 },
+    lens: { name: "70-200mm F2.8 at 200mm", focal: 200, maxAperture: 2.8, minAperture: 32, minFocus: 1.2 },
     subject: { layer: "dog", face: false },
     awbK: 6300,
     lightK: 6600,
@@ -163,9 +167,9 @@ const SPECS: Record<string, SceneSpec> = {
     layers: [
       { name: "room", file: "scenes/dinner/room.jpg", depth: 4.5, ev: 3.9, kelvin: 2700, highlights: { knee: 0.75, gain: 30 } },
       { name: "person", file: "scenes/dinner/man.png", depth: 2.5, ev: 4.4, kelvin: 2500 },
-      { name: "table", file: "scenes/dinner/table.png", depth: 1.6, ground: { horizon: 0.45, k: 0.6, far: 2.4 }, ev: 4.4, kelvin: 2500, highlights: { knee: 0.8, gain: 120, box: [0.4, 0.48, 0.6, 0.62] } },
+      { name: "table", file: "scenes/dinner/table.png", depth: 1.4, ground: { horizon: 0.6, k: 0.3, far: 1.4 }, ev: 4.4, kelvin: 2500, highlights: { knee: 0.8, gain: 120, box: [0.4, 0.48, 0.6, 0.62] } },
     ],
-    lens: { name: "35mm F1.8", focal: 35, maxAperture: 1.8, minAperture: 22 },
+    lens: { name: "35mm F1.8", focal: 35, maxAperture: 1.8, minAperture: 22, minFocus: 0.25 },
     subject: { layer: "person", face: true },
     awbK: 3400,
     lightK: 2500,
@@ -175,9 +179,80 @@ const SPECS: Record<string, SceneSpec> = {
       metering: "evaluative", afoperation: "oneshot", afmethod: "face+tracking", picturestyle: "auto",
     },
   },
+  gym: {
+    id: "gym",
+    title: "Basketball under fluorescent lights",
+    blurb: "A school sports hall lit by old fluorescent tubes. Silent shutter at 1/1000: every frame comes out a different brightness, with stripes.",
+    goals: ["Freeze the drive to the basket", "Even exposure and colour across a burst", "Sharp player, defender and crowd softer behind"],
+    layers: [
+      {
+        name: "hall", file: "scenes/gym/plate.jpg", depth: 44, ground: { horizon: 0.4, k: 6.2, far: 44 },
+        ev: 7.3, kelvin: 4100, highlights: { knee: 0.85, gain: 12, box: [0, 0, 1, 0.08] }, flicker: { light: GYM_TUBES },
+      },
+      { name: "defender", file: "scenes/gym/defender.png", depth: 25, ev: 7.3, kelvin: 4100, motion: { speed: 230, range: [-50, 70] }, shadow: 0.25, flicker: { light: GYM_TUBES } },
+      { name: "player", file: "scenes/gym/player.png", depth: 16, ev: 7.3, kelvin: 4100, motion: { speed: 440, range: [-70, 130] }, shadow: 0.3, flicker: { light: GYM_TUBES } },
+    ],
+    lens: { name: "85mm F1.8", focal: 85, maxAperture: 1.8, minAperture: 22, minFocus: 0.8 },
+    subject: { layer: "player", face: true },
+    awbK: 4300,
+    lightK: 4100,
+    handheld: true,
+    initial: {
+      shootingmode: "tv", av: "f1.8", tv: "1/1000", iso: "auto", exposure: "+0.0", wb: "auto", colortemperature: 5200,
+      metering: "evaluative", afoperation: "oneshot", afmethod: "face+tracking", picturestyle: "auto",
+      shuttermode: "electronic", drive: "highspeed",
+    },
+  },
+  concert: {
+    id: "concert",
+    title: "Club gig under LED lights",
+    blurb: "A small club stage lit by dimmed LED panels. Silent shutter at 1/800: dark stripes run across every frame.",
+    goals: ["Shoot silently, but get rid of the dark stripes", "Sharp singer at a fast shutter speed, no banding", "Singer sharp, band softly blurred behind"],
+    layers: [
+      { name: "stage", file: "scenes/concert/plate.jpg", depth: 12, ev: 8.5, kelvin: 5200, highlights: { knee: 0.8, gain: 25, box: [0, 0, 1, 0.75] }, flicker: { light: STAGE_LEDS } },
+      { name: "band", file: "scenes/concert/band.png", depth: 10, ev: 8.7, kelvin: 5200, flicker: { light: STAGE_LEDS } },
+      { name: "singer", file: "scenes/concert/singer.png", depth: 4.5, ev: 9, kelvin: 5200, highlights: { knee: 0.9, gain: 3 }, flicker: { light: STAGE_LEDS } },
+      { name: "crowd", file: "scenes/concert/crowd.png", depth: 2, ev: 6, kelvin: 5200, flicker: { light: STAGE_LEDS, share: 0.6 } },
+    ],
+    lens: { name: "24-70mm F2.8 at 70mm", focal: 70, maxAperture: 2.8, minAperture: 22, minFocus: 0.38 },
+    subject: { layer: "singer", face: true },
+    awbK: 5000,
+    lightK: 5200,
+    handheld: true,
+    initial: {
+      shootingmode: "tv", av: "f2.8", tv: "1/2000", iso: "auto", exposure: "+0.0", wb: "auto", colortemperature: 5200,
+      metering: "evaluative", afoperation: "oneshot", afmethod: "face+tracking", picturestyle: "auto",
+      shuttermode: "electronic",
+    },
+  },
+  group: {
+    id: "group",
+    title: "Group portrait in the shade",
+    blurb: "Three friends at 2, 3.4 and 5.6 m under a tree. The lens is wide open at f/1.4, so only the nearest face is sharp.",
+    goals: ["Get all three of them sharp", "All three sharp, background still soft", "Warmer, natural skin tones in the shade"],
+    layers: [
+      {
+        name: "park", file: "scenes/group/plate.jpg", depth: 30, ground: { horizon: 0.322, k: 2.18, far: 30 },
+        ev: [[0, 13.2], [0.3, 13.2], [0.4, 12.8], [0.47, 11.6], [1, 11.4]], kelvin: 6000,
+      },
+      { name: "back", file: "scenes/group/back.png", depth: 5.6, ev: 11.4, kelvin: 7000 },
+      { name: "middle", file: "scenes/group/middle.png", depth: 3.4, ev: 11.4, kelvin: 7000 },
+      { name: "front", file: "scenes/group/front.png", depth: 2.1, ev: 11.4, kelvin: 7000 },
+    ],
+    lens: { name: "35mm F1.4", focal: 35, maxAperture: 1.4, minAperture: 16, minFocus: 0.3 },
+    subject: { layer: "front", face: true },
+    awbK: 6200,
+    lightK: 7000,
+    handheld: true,
+    initial: {
+      shootingmode: "av", av: "f1.4", tv: "1/250", iso: "auto", exposure: "+0.0", wb: "auto", colortemperature: 5200,
+      metering: "evaluative", afoperation: "oneshot", afmethod: "face+tracking", picturestyle: "auto",
+    },
+  },
 };
 
-export const SCENE_IDS = Object.keys(SPECS);
+/** Picker order: the scenes where a little-known setting is the fix come first. */
+export const SCENE_IDS = ["concert", "gym", "dog", "group", "dinner"].filter((id) => id in SPECS);
 
 /** Scene metadata without loading the pixels (for pickers). */
 export const SCENE_INFO = SCENE_IDS.map((id) => {
@@ -289,8 +364,10 @@ export async function loadScene(id: string, load: ImageLoader): Promise<Scene> {
   const layers: SceneLayer[] = spec.layers.map((l, i) => {
     let layer = toLayer(decoded[i], l);
     if (l.shadow) layer = withShadow(layer, l.shadow);
-    const out: SceneLayer = { name: l.name, depth: l.depth, layer };
+    const light = Float32Array.from({ length: SCENE_H }, (_, y) => 2 ** evAt(l.ev, (y + 0.5) / SCENE_H));
+    const out: SceneLayer = { name: l.name, depth: l.depth, layer, light, tint: illuminant(l.kelvin) };
     if (l.ground) out.ground = l.ground;
+    if (l.flicker) out.flicker = { light: l.flicker.light, share: l.flicker.share ?? 1 };
     if (l.motion) {
       const b = bounds(layer);
       out.motion = { ...l.motion, pivotX: Math.round((b.x + b.w / 2) * SCENE_W) };

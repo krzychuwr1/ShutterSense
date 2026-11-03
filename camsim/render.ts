@@ -1,10 +1,14 @@
 // Renders a scene through a virtual lens and sensor: depth of field from the
 // thin-lens model, subject motion and hand shake over the exposure time,
-// exposure in physical units, sensor noise that grows with ISO, highlight
-// clipping, white balance and a picture style, then sRGB 8-bit output.
+// flash light falling off with distance, exposure in physical units, sensor
+// noise that grows with ISO, highlight clipping, white balance (with shift),
+// a picture style with its detail parameters, then 8-bit sRGB or Adobe RGB.
+// Flickering lights are sampled row by row as the shutter crosses the frame
+// (see flicker.ts).
 
 import { illuminant, toSrgb } from "./color.ts";
-import { rng, type Layer } from "./paint.ts";
+import { rowGains, type ShutterTiming } from "./flicker.ts";
+import { rng, type Layer, type RGB } from "./paint.ts";
 import { depthAt, type Scene, type SceneLayer } from "./scenes.ts";
 
 /** Full-frame sensor width in mm. */
@@ -21,13 +25,34 @@ export interface RenderOpts {
   N: number;
   t: number;
   iso: number;
-  /** Aperture used for depth of field (live view shows it wide open). */
+  /** Aperture used for depth of field. */
   dofN: number;
   /** Focus distance in metres. */
   focus: number;
   /** White balance colour temperature the camera applies. */
   wbK: number;
   pictureStyle: string;
+  /** Picture style detail; without it the style's plain look, unsharpened. */
+  styleDetail?: StyleDetail;
+  /** The light colour to neutralise (a custom white balance reading); overrides wbK. */
+  wbRgb?: RGB;
+  /** White balance shift in steps: blue (-) / amber (+), magenta (-) / green (+). */
+  wbShift?: { ba: number; mg: number };
+  colorSpace?: "srgb" | "adobe_rgb";
+  /** Flash output reaching the scene, as a guide number (metres at ISO 100) after power control. */
+  flash?: { gn: number };
+  /** Rolling shutter: time the sensor takes to read out top to bottom, seconds (0 = mechanical). */
+  readout?: number;
+  /**
+   * How the shutter samples flickering lights (when and how fast it crosses
+   * the frame), and `gain`: an exposure correction the camera applies (anti-flicker
+   * shooting exposes for the light's peak, not its mean). Without it, lights are steady.
+   */
+  flicker?: ShutterTiming & { gain?: number };
+  /** Focus stacking: more focus distances; each layer is as sharp as its best one. */
+  focusStack?: number[];
+  /** Also return the sensor data (after exposure and noise, before white balance). */
+  linear?: boolean;
   /** Scene clock in seconds: where moving subjects are. */
   time: number;
   /** Blur moving subjects over the exposure time. */
@@ -41,6 +66,22 @@ export interface Rendered {
   w: number;
   h: number;
   rgba: Uint8ClampedArray;
+  /** Linear sensor RGB, 3 floats per pixel, 1.0 = saturation (when asked for). */
+  linear?: Float32Array;
+  /** Per-channel white balance gains that were applied. */
+  wbGains: RGB;
+}
+
+/** Picture style detail parameters, as the camera's API names them. */
+export interface StyleDetail {
+  sharpness_strength: number;
+  sharpness_fineness: number;
+  sharpness_threshold: number;
+  contrast: number;
+  saturation?: number;
+  colortone?: number;
+  filtereffect?: string;
+  toningeffect?: string;
 }
 
 // ------------------------------------------------------------------ layers at a size
@@ -91,18 +132,22 @@ export function motionAt(sl: SceneLayer, time: number): { dx: number; dir: 1 | -
   return phase < span ? { dx: r0 + phase, dir: 1 } : { dx: r1 - (phase - span), dir: -1 };
 }
 
-/** A moving layer placed at its current position (and mirrored when running the other way). */
-function placed(l: Layer, sl: SceneLayer, time: number, factor: number): Layer {
+/**
+ * A moving layer placed at its current position (and mirrored when running
+ * the other way). With a rolling shutter each row is read a little later
+ * than the one above, so a moving subject leans.
+ */
+function placed(l: Layer, sl: SceneLayer, time: number, factor: number, readout = 0): Layer {
   if (!sl.motion) return l;
   const { dx, dir } = motionAt(sl, time);
-  const off = Math.round(dx / factor);
   const pivot = sl.motion.pivotX / factor;
   const out: Layer = { w: l.w, h: l.h, rgb: new Float32Array(l.rgb.length), a: new Float32Array(l.a.length) };
-  for (let x = 0; x < l.w; x++) {
-    const u = x - off;
-    const sx = dir === 1 ? u : Math.round(2 * pivot - u);
-    if (sx < 0 || sx >= l.w) continue;
-    for (let y = 0; y < l.h; y++) {
+  for (let y = 0; y < l.h; y++) {
+    const off = Math.round((dx + dir * sl.motion.speed * readout * (y / l.h)) / factor);
+    for (let x = 0; x < l.w; x++) {
+      const u = x - off;
+      const sx = dir === 1 ? u : Math.round(2 * pivot - u);
+      if (sx < 0 || sx >= l.w) continue;
       const i = y * l.w + x;
       const j = y * l.w + sx;
       out.a[i] = l.a[j];
@@ -229,15 +274,21 @@ export function blurCircleMm(focal: number, N: number, s: number, d: number): nu
   return ((f * f) / (N * (S - f))) * (Math.abs(D - S) / D);
 }
 
+/** Flash colour: a speedlite is close to daylight. */
+const FLASH_RGB = illuminant(5600);
+
+type CompositeOpts = Pick<RenderOpts, "w" | "dofN" | "focus" | "time" | "motionBlur" | "t" | "flash" | "readout" | "focusStack" | "flicker"> & { blur?: boolean };
+
 /** Composite of all layers at output size, in linear radiance (no exposure applied). */
-export function composite(scene: Scene, o: Pick<RenderOpts, "w" | "dofN" | "focus" | "time" | "motionBlur" | "t"> & { blur?: boolean }): { rgb: Float32Array; w: number; h: number } {
+export function composite(scene: Scene, o: CompositeOpts): { rgb: Float32Array; w: number; h: number } {
   const factor = Math.max(1, Math.round(scene.w / o.w));
   const w = Math.floor(scene.w / factor);
   const h = Math.floor(scene.h / factor);
   const acc = new Float32Array(w * h * 3);
   const blur = o.blur ?? true;
+  const focuses = [o.focus, ...(o.focusStack ?? [])];
   for (const sl of scene.layers) {
-    const l = placed(layerAt(sl, factor), sl, o.time, factor);
+    const l = placed(layerAt(sl, factor), sl, o.time, factor, o.readout);
     const buf = new Float32Array(w * h * 4);
     for (let i = 0; i < w * h; i++) {
       buf[i * 4] = l.rgb[i * 3];
@@ -245,11 +296,29 @@ export function composite(scene: Scene, o: Pick<RenderOpts, "w" | "dofN" | "focu
       buf[i * 4 + 2] = l.rgb[i * 3 + 2];
       buf[i * 4 + 3] = l.a[i];
     }
+    if (o.flash && o.flash.gn > 0 && o.t > 0) addFlash(buf, sl, w, h, factor, o.flash.gn, o.t);
     if (blur) {
-      const sigma = (d: number) => ((blurCircleMm(scene.lens.focal, o.dofN, o.focus, d) / SENSOR_W) * w) / 2.6;
+      // Blur circle for the nearest of the focus distances (just one unless stacking).
+      const coc = (d: number) => Math.min(...focuses.map((f) => blurCircleMm(scene.lens.focal, o.dofN, f, d)));
+      const sigma = (d: number) => ((coc(d) / SENSOR_W) * w) / 2.6;
       if (sl.ground) gaussianByRow(buf, w, h, Float32Array.from({ length: h }, (_, y) => sigma(depthAt(sl, (y + 0.5) / h))));
       else gaussian(buf, w, h, sigma(sl.depth));
       if (o.motionBlur && sl.motion) smear(buf, w, h, (sl.motion.speed / factor) * o.t);
+    }
+    // Flicker acts on the image as it falls on the sensor: row by row, after the lens blur.
+    if (o.flicker && sl.flicker && o.t > 0) {
+      const g = rowGains(sl.flicker.light, o.flicker, o.t, h);
+      const share = sl.flicker.share;
+      for (let y = 0; y < h; y++) {
+        const kr = 1 - share + share * g[y * 3];
+        const kg = 1 - share + share * g[y * 3 + 1];
+        const kb = 1 - share + share * g[y * 3 + 2];
+        for (let i = y * w * 4; i < (y + 1) * w * 4; i += 4) {
+          buf[i] *= kr;
+          buf[i + 1] *= kg;
+          buf[i + 2] *= kb;
+        }
+      }
     }
     for (let i = 0; i < w * h; i++) {
       const a = buf[i * 4 + 3];
@@ -259,6 +328,30 @@ export function composite(scene: Scene, o: Pick<RenderOpts, "w" | "dofN" | "focu
     }
   }
   return { rgb: acc, w, h };
+}
+
+/**
+ * Adds flash light to a layer. The light reaching a surface falls off with
+ * the square of its distance; a surface reflects it in its own colour, which
+ * is recovered from the layer's ambient lighting. Expressed as radiance over
+ * the exposure time so the normal exposure maths applies: a mid-grey at
+ * distance gn / N comes out mid-grey, as a guide number promises.
+ */
+function addFlash(buf: Float32Array, sl: SceneLayer, w: number, h: number, factor: number, gn: number, t: number) {
+  for (let y = 0; y < h; y++) {
+    const sy = Math.min(sl.light.length - 1, Math.floor((y + 0.5) * factor));
+    const d = Math.max(0.3, depthAt(sl, (y + 0.5) / h));
+    const k = (gn / d) ** 2 / t / sl.light[sy];
+    const kr = (k * FLASH_RGB[0]) / sl.tint[0];
+    const kg = (k * FLASH_RGB[1]) / sl.tint[1];
+    const kb = (k * FLASH_RGB[2]) / sl.tint[2];
+    for (let x = 0; x < w; x++) {
+      const i = (y * w + x) * 4;
+      buf[i] += buf[i] * kr;
+      buf[i + 1] += buf[i + 1] * kg;
+      buf[i + 2] += buf[i + 2] * kb;
+    }
+  }
 }
 
 // ------------------------------------------------------------------ picture styles
@@ -275,6 +368,32 @@ export const PICTURE_STYLES: Record<string, Style> = {
   faithful: { contrast: 0.95, saturation: 0.95, warmth: 0 },
   monochrome: { contrast: 1.15, saturation: 0, warmth: 0, mono: true },
 };
+
+/** Luminance weights of the monochrome filter effects (like colour filters on black-and-white film). */
+const MONO_FILTERS: Record<string, RGB> = {
+  none: [0.2126, 0.7152, 0.0722],
+  yellow: [0.36, 0.6, 0.04],
+  orange: [0.5, 0.46, 0.04],
+  red: [0.72, 0.28, 0],
+  green: [0.12, 0.83, 0.05],
+};
+
+/** Toning of monochrome images, as channel multipliers. */
+const TONING: Record<string, RGB> = {
+  none: [1, 1, 1],
+  sepia: [1.08, 0.98, 0.82],
+  blue: [0.88, 0.97, 1.12],
+  purple: [1.04, 0.9, 1.1],
+  green: [0.9, 1.06, 0.9],
+};
+
+/** Linear sRGB to linear Adobe RGB (1998); both use the D65 white point. */
+const TO_ADOBE = [
+  [0.7152, 0.2848, 0],
+  [0, 1, 0],
+  [0, 0.0412, 0.9588],
+];
+const adobeGamma = (c: number) => Math.max(0, c) ** (1 / 2.19921875);
 
 // ------------------------------------------------------------------ render
 
@@ -304,7 +423,7 @@ export function render(scene: Scene, o: RenderOpts): Rendered {
   }
 
   // Exposure: 1.0 is sensor saturation.
-  const k = (o.t * o.iso) / (100 * o.N * o.N);
+  const k = ((o.t * o.iso) / (100 * o.N * o.N)) * (o.flicker?.gain ?? 1);
   for (let i = 0; i < rgb.length; i++) rgb[i] *= k;
 
   // Glow around anything far over saturation (sun, flames, bare bulbs).
@@ -324,23 +443,45 @@ export function render(scene: Scene, o: RenderOpts): Rendered {
     }
   }
 
-  // White balance and picture style, then highlights rolled off to white.
-  const wb = illuminant(o.wbK);
+  const linear = o.linear ? rgb.slice() : undefined;
+
+  // White balance (with shift) and picture style, then highlights rolled off to white.
+  const gains = wbGains(o.wbRgb ?? illuminant(o.wbK), o.wbShift);
   const style = PICTURE_STYLES[o.pictureStyle] ?? PICTURE_STYLES.standard;
-  const mr = (1 / wb[0]) * (1 + style.warmth);
-  const mg = 1 / wb[1];
-  const mb = (1 / wb[2]) * (1 - style.warmth);
-  const out = new Uint8ClampedArray(w * h * 4);
+  const d = o.styleDetail;
+  const contrast = style.contrast * (1 + 0.06 * (d?.contrast ?? 0));
+  const saturation = style.saturation * Math.max(0, 1 + 0.12 * (d?.saturation ?? 0));
+  const colortone = 0.025 * (d?.colortone ?? 0);
+  const monoW = MONO_FILTERS[d?.filtereffect ?? "none"] ?? MONO_FILTERS.none;
+  const toning = TONING[d?.toningeffect ?? "none"] ?? TONING.none;
+  const adobe = o.colorSpace === "adobe_rgb";
+  const encode = adobe ? adobeGamma : toSrgb;
+  const mr = gains[0] * (1 + style.warmth);
+  const mg = gains[1];
+  const mb = gains[2] * (1 - style.warmth);
+  const fl = new Float32Array(w * h * 3);
   for (let p = 0; p < w * h; p++) {
     let r = rgb[p * 3] * mr;
     let g = rgb[p * 3 + 1] * mg;
     let b = rgb[p * 3 + 2] * mb;
     const y = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-    if (style.mono) r = g = b = y;
-    else {
-      r = Math.max(0, y + (r - y) * style.saturation);
-      g = Math.max(0, y + (g - y) * style.saturation);
-      b = Math.max(0, y + (b - y) * style.saturation);
+    if (style.mono) {
+      const m = monoW[0] * r + monoW[1] * g + monoW[2] * b;
+      r = m * toning[0];
+      g = m * toning[1];
+      b = m * toning[2];
+    } else {
+      r = Math.max(0, y + (r - y) * saturation);
+      g = Math.max(0, y + (g - y) * saturation);
+      b = Math.max(0, y + (b - y) * saturation);
+      // Colour tone: warm tones lean yellow (+) or red (-); neutrals stay put.
+      if (colortone && r > g) g = Math.max(0, g + colortone * (r - g));
+    }
+    if (adobe) {
+      const ar = TO_ADOBE[0][0] * r + TO_ADOBE[0][1] * g;
+      const ab = TO_ADOBE[2][1] * g + TO_ADOBE[2][2] * b;
+      r = ar;
+      b = ab;
     }
     // Anything past saturation goes to white, whatever its colour (a clipped
     // flame is white, not cyan), fully so at three times saturation.
@@ -351,21 +492,90 @@ export function render(scene: Scene, o: RenderOpts): Rendered {
       g = (g / max) * (1 - k) + k;
       b = (b / max) * (1 - k) + k;
     }
-    out[p * 4] = tone(r, style.contrast);
-    out[p * 4 + 1] = tone(g, style.contrast);
-    out[p * 4 + 2] = tone(b, style.contrast);
+    fl[p * 3] = tone(r, contrast, encode);
+    fl[p * 3 + 1] = tone(g, contrast, encode);
+    fl[p * 3 + 2] = tone(b, contrast, encode);
+  }
+  if (d) sharpen(fl, w, h, d);
+  const out = new Uint8ClampedArray(w * h * 4);
+  for (let p = 0; p < w * h; p++) {
+    out[p * 4] = Math.round(fl[p * 3] * 255);
+    out[p * 4 + 1] = Math.round(fl[p * 3 + 1] * 255);
+    out[p * 4 + 2] = Math.round(fl[p * 3 + 2] * 255);
     out[p * 4 + 3] = 255;
   }
-  return { w, h, rgba: out };
+  return { w, h, rgba: out, linear, wbGains: gains };
 }
 
-/** Linear value to 8-bit sRGB with a contrast curve around mid-grey. */
-function tone(v: number, contrast: number): number {
-  const s = toSrgb(Math.max(0, Math.min(1, v)));
+/**
+ * Gains that render light of colour `light` neutral, then the shift: each
+ * step is about 2.5 % on its axis, normalised so a shift keeps brightness.
+ */
+export function wbGains(light: RGB, shift?: { ba: number; mg: number }): RGB {
+  let r = 1 / light[0];
+  let g = 1 / light[1];
+  let b = 1 / light[2];
+  if (shift && (shift.ba || shift.mg)) {
+    r *= 1 + 0.025 * shift.ba;
+    b *= 1 - 0.025 * shift.ba;
+    g *= 1 + 0.025 * shift.mg;
+    const y = 0.2126 * r * light[0] + 0.7152 * g * light[1] + 0.0722 * b * light[2];
+    r /= y;
+    g /= y;
+    b /= y;
+  }
+  return [r, g, b];
+}
+
+/** Linear value to an encoded 0..1 value with a contrast curve around mid-grey. */
+function tone(v: number, contrast: number, encode: (c: number) => number): number {
+  const s = encode(Math.max(0, Math.min(1, v)));
   const c = 0.5 + (s - 0.5) * contrast;
   // Soft knees so contrast never crushes or clips abruptly.
-  const t = c < 0.05 ? 0.05 * Math.exp((c - 0.05) / 0.05) : c > 0.96 ? 1 - 0.04 * Math.exp(-(c - 0.96) / 0.04) : c;
-  return Math.round(t * 255);
+  return c < 0.05 ? 0.05 * Math.exp((c - 0.05) / 0.05) : c > 0.96 ? 1 - 0.04 * Math.exp(-(c - 0.96) / 0.04) : c;
+}
+
+/**
+ * Unsharp mask on brightness: strength scales the effect, fineness picks the
+ * size of detail it works on (1 = finest), threshold leaves small
+ * differences (noise, smooth skin) alone.
+ */
+function sharpen(rgb: Float32Array, w: number, h: number, d: StyleDetail) {
+  const amount = 0.16 * d.sharpness_strength;
+  if (amount <= 0) return;
+  const lum = new Float32Array(w * h);
+  for (let p = 0; p < w * h; p++) lum[p] = 0.2126 * rgb[p * 3] + 0.7152 * rgb[p * 3 + 1] + 0.0722 * rgb[p * 3 + 2];
+  const blurred = lum.slice();
+  blur1(blurred, w, h, Math.max(1, Math.round(0.4 + 0.4 * d.sharpness_fineness)));
+  const thr = 0.004 * d.sharpness_threshold;
+  for (let p = 0; p < w * h; p++) {
+    const diff = lum[p] - blurred[p];
+    const mag = Math.abs(diff);
+    if (mag <= thr) continue;
+    const add = amount * Math.sign(diff) * (mag - thr);
+    for (let c = 0; c < 3; c++) rgb[p * 3 + c] = Math.min(1, Math.max(0, rgb[p * 3 + c] + add));
+  }
+}
+
+/** Two box passes each way (close to a small Gaussian) on one channel, in place. */
+function blur1(buf: Float32Array, w: number, h: number, r: number) {
+  const tmp = new Float32Array(buf.length);
+  const norm = 1 / (2 * r + 1);
+  const pass = (src: Float32Array, dst: Float32Array, len: number, lines: number, stride: number, lineStep: number) => {
+    for (let line = 0; line < lines; line++) {
+      const base = line * lineStep;
+      let sum = 0;
+      for (let k = -r; k <= r; k++) sum += src[base + Math.min(len - 1, Math.max(0, k)) * stride];
+      for (let i = 0; i < len; i++) {
+        dst[base + i * stride] = sum * norm;
+        sum += src[base + Math.min(len - 1, i + r + 1) * stride] - src[base + Math.max(0, i - r) * stride];
+      }
+    }
+  };
+  for (let n = 0; n < 2; n++) {
+    pass(buf, tmp, w, h, 1, w);
+    pass(tmp, buf, h, w, w, 1);
+  }
 }
 
 /** Adds a soft halo of light that exceeds saturation. */
