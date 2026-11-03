@@ -1,11 +1,12 @@
 // The front page: what Shutter Sense is (the camera settings most people
-// never find, changed over the camera's API or shown tap by tap), an animated
-// diagram of how the camera, the phone app, the cloud and the glasses work
+// never find, changed over the camera's API or shown tap by tap), the three
+// devices it runs across, an animated diagram of how the camera, the phone app, the cloud and the glasses work
 // together, and the way into the simulated experience.
 
 import { menuPath, type MenuScreen } from "../../shared/menu.ts";
 import { sprite, use } from "./brand.ts";
 import { menuGuide } from "./camera-menu.ts";
+import { cameraArt, glassesArt, phoneArt } from "./devices.ts";
 import { el, h } from "./dom.ts";
 
 const reducedMotion = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -776,6 +777,48 @@ const SCENES: Array<[string, string, string]> = [
   ["group", "Group portrait in the shade", "“Get all three of them sharp”"],
 ];
 
+// ---------------------------------------------------------------- the setup
+
+const SETUP_CARDS: Array<[string, string, string]> = [
+  [cameraArt("light"), "Professional camera", "Connects over Wi-Fi. The agent sets it up and takes test shots."],
+  [phoneArt("light"), "Your phone", "Runs the AI agent. Say what you want, it does the rest."],
+  [glassesArt("light"), "Ray-Ban Display", "Each step on the lens. Your eye stays at the viewfinder."],
+];
+
+const SETUP = `<section class="setup" id="setup">
+  <div class="wrap">
+    <ol class="setup-cards">
+      ${SETUP_CARDS.map(([art, title, text], i) => `<li class="setup-card">
+        <div class="setup-art">${art}</div>
+        <h3><span class="setup-n">${i + 1}</span>${title}</h3>
+        <p>${text}</p>
+      </li>`).join("")}
+    </ol>
+  </div>
+</section>`;
+
+const KEEP_SHOOTING = `<section class="keep">
+  <div class="wrap">
+    <div class="keep-band">
+      <div class="keep-text">
+        <h2>Say what you want.<span class="g">Keep shooting.</span></h2>
+        <p>One agent across the three things in your hands.</p>
+        <ul>
+          <li>Camera takes the shot</li>
+          <li>Phone runs the agent</li>
+          <li>Glasses show every step</li>
+        </ul>
+      </div>
+      <div class="keep-stage" aria-hidden="true">
+        <div class="keep-glasses">${glassesArt("dark")}</div>
+        <div class="keep-camera">${cameraArt("dark")}</div>
+        <div class="keep-phone">${phoneArt("dark")}</div>
+        <div class="keep-bubble">“Freeze the dog mid-stride”</div>
+      </div>
+    </div>
+  </div>
+</section>`;
+
 const TRY = `<section class="try" id="try">
   <div class="wrap">
     <div class="band">
@@ -805,13 +848,15 @@ export function startLanding(root: HTMLElement) {
     el("header", { class: "lp-top" }, [
       el("div", { class: "wrap" }, [
         brand(),
-        h(`<nav class="lp-nav" aria-label="Sections"><a href="#settings">The settings</a><a href="#how">How it works</a><a href="#pieces">The four pieces</a></nav>`),
+        h(`<nav class="lp-nav" aria-label="Sections"><a href="#setup">The setup</a><a href="#settings">The settings</a><a href="#how">How it works</a><a href="#pieces">The four pieces</a></nav>`),
         el("a", { class: "btn primary small", href: "/try" }, ["Try it"]),
       ]),
     ]),
     el("main", {}, [
       hero,
+      h(SETUP),
       paths,
+      h(KEEP_SHOOTING),
       el("section", { class: "how", id: "how" }, [el("div", { class: "wrap" }, [h(HOW_HEAD), flow.root])]),
       h(PIECES),
       h(TRY),
