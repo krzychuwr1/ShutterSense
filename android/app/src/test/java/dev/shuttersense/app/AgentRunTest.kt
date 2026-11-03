@@ -18,6 +18,7 @@ import dev.shuttersense.app.agent.StepKind
 import dev.shuttersense.app.agent.WorkerException
 import dev.shuttersense.app.agent.cleanPreset
 import dev.shuttersense.app.agent.presetKey
+import dev.shuttersense.app.agent.repeatsNote
 import dev.shuttersense.app.agent.RunOptions
 import dev.shuttersense.app.agent.RunUi
 import dev.shuttersense.app.agent.ShotResult
@@ -58,6 +59,9 @@ class AgentRunTest {
     private var ids = 0
     private fun call(name: String, args: String = "{}") = FunctionCall("$name-${ids++}", name, args)
     private fun reply(vararg calls: FunctionCall) = AgentResponse(calls.toList(), "", "")
+
+    private val SHADE = "Her face is in deep tree shade against a sunlit meadow — too wide a brightness range for one exposure, and flash is off the table. I'll use HDR to hold both."
+    private val SHADE_AGAIN = "Her face is in deep tree shade against a sunlit meadow — lifting exposure would blow out the grass, and flash is off as requested. I'll have you enable HDR so the camera merges exposures and holds both her face and the meadow."
 
     /** A camera the tested tools never reach. */
     private val camera = CameraTools(
@@ -165,6 +169,37 @@ class AgentRunTest {
     private fun unanswered(input: List<JsonObject>): Int {
         val answered = input.filter { str(it, "type") == "function_call_output" }.map { str(it, "call_id") }.toSet()
         return input.count { str(it, "type") == "function_call" && str(it, "call_id") !in answered }
+    }
+
+    @Test
+    fun aRewordedNoteIsARepeatAndANewThoughtIsNot() {
+        assertTrue(repeatsNote(SHADE_AGAIN, SHADE))
+        assertFalse(
+            repeatsNote(
+                "Silent electronic shutter + fast LED panels = banding. I'll run HF flicker detection to match the shutter to the LEDs.",
+                "Silently but band-free — checking the shutter and light first.",
+            ),
+        )
+        assertFalse(repeatsNote(SHADE, ""))
+        assertFalse(repeatsNote("ok", SHADE))
+    }
+
+    @Test
+    fun commentaryShowsOnceNotNextToTellUserOrRewordedARoundLater() = runTest {
+        val replies = ArrayDeque(
+            listOf(
+                AgentResponse(listOf(call("tell_user", """{"text":"Short note"}""")), "", SHADE),
+                AgentResponse(listOf(call("no_such_tool")), "", SHADE_AGAIN),
+                AgentResponse(listOf(call("no_such_tool")), "", "The shot came out soft, so servo focus goes on next."),
+                reply(call("finish", """{"summary":"ok"}""")),
+            ),
+        )
+        val ui = FakeUi()
+        val run = AgentRun(RecordingApi { replies.removeFirst() }, camera, ui, RunOptions(3, false, { false }, "t"), this)
+        run.start("Keep her face and the meadow")
+        advanceUntilIdle()
+        val notes = ui.steps.filter { it.kind == StepKind.THINK || it.kind == StepKind.TELL }.map { it.text }
+        assertEquals(listOf("Short note", "The shot came out soft, so servo focus goes on next."), notes)
     }
 
     @Test

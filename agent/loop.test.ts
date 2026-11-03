@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { AgentRequest, AgentResponse, FunctionCall, Idea, Preset } from "../shared/agent-api.ts";
 import type { CameraTools } from "./camera-tools.ts";
-import { AgentRun, lensLine, withoutOldRounds, withRecentImages, type RunUi } from "./loop.ts";
+import { AgentRun, lensLine, repeatsNote, withoutOldRounds, withRecentImages, type RunUi } from "./loop.ts";
 
 const img = (i: number) => ({ type: "function_call_output", call_id: `c${i}`, output: [{ type: "input_text", text: `shot ${i}` }, { type: "input_image", image_url: "data:image/jpeg;base64,AA" }] });
 
@@ -46,6 +46,16 @@ test("the lens gets one short line", () => {
   assert.ok(!line.includes("I changed"));
 });
 
+const SHADE = "Her face is in deep tree shade against a sunlit meadow — too wide a brightness range for one exposure, and flash is off the table. I'll use HDR to hold both.";
+const SHADE_AGAIN = "Her face is in deep tree shade against a sunlit meadow — lifting exposure would blow out the grass, and flash is off as requested. I'll have you enable HDR so the camera merges exposures and holds both her face and the meadow.";
+
+test("a note reworded from the last one is a repeat, a new thought is not", () => {
+  assert.ok(repeatsNote(SHADE_AGAIN, SHADE));
+  assert.ok(!repeatsNote("Silent electronic shutter + fast LED panels = banding. I'll run HF flicker detection to match the shutter to the LEDs.", "Silently but band-free — checking the shutter and light first."));
+  assert.ok(!repeatsNote(SHADE, ""));
+  assert.ok(!repeatsNote("ok", SHADE));
+});
+
 // ------------------------------------------------------------------ the run
 
 test("when even the photographer's messages don't fit, the latest of them stay", () => {
@@ -85,6 +95,20 @@ function unanswered(input: unknown[]) {
   const answered = new Set(items.filter((i) => i.type === "function_call_output").map((i) => i.call_id));
   return items.filter((i) => i.type === "function_call" && !answered.has(i.call_id)).length;
 }
+
+test("the model's commentary shows once, not next to tell_user or reworded a round later", async () => {
+  const replies: AgentResponse[] = [
+    { ...reply(call("tell_user", { text: "Short note" })), commentary: SHADE },
+    { ...reply(call("get_camera_state")), commentary: SHADE_AGAIN },
+    { ...reply(call("get_camera_state")), commentary: "The shot came out soft, so servo focus goes on next." },
+    reply(call("finish", { summary: "ok" })),
+  ];
+  const notes: string[] = [];
+  const { ui } = fakeUi({ step: (e) => void ((e.kind === "think" || e.kind === "tell") && notes.push(e.text)) });
+  const run = new AgentRun({ step: async () => replies.shift()! }, camera, ui, { maxShots: 3, askBeforeShooting: false, glasses: () => false, session: "t" });
+  await run.start("Keep her face and the meadow");
+  assert.deepEqual(notes, ["Short note", "The shot came out soft, so servo focus goes on next."]);
+});
 
 test("a cancelled shot approval ends the run, and a follow-up sends a valid transcript", async () => {
   const requests: AgentRequest[] = [];

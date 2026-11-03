@@ -486,6 +486,11 @@ export class PhoneApp {
   }
 
   private addStep(e: StepEntry) {
+    // The lens shows what the photographer asked for last, not only the first goal.
+    if (e.kind === "instruction") {
+      this.hud.goal = e.text;
+      this.pushHud();
+    }
     if (e.kind === "look" && !this.firstLook && !this.settingsTouched && e.image) this.firstLook = e.image;
     if (e.kind === "settings" && e.detail?.length) this.settingsTouched = true;
     // Menu steps stay on the lens until the photographer has done them.

@@ -107,12 +107,27 @@ private const val IDEA_SIDE = 400
 /** Longest summary the glasses' lens shows. */
 private const val LENS_MAX = 90
 
+/** Share of a note's words already said that makes it a repeat. */
+private const val REPEATED_WORDS = 0.4
+private val NOTE_WORD = Regex("[\\p{L}\\p{N}]{4,}")
+
 /** One line for the lens: the model's own short version, or the summary's first sentence, cut at a word. */
 fun lensLine(summary: String, short: String = ""): String {
     val s = short.trim().ifEmpty { summary.trim().split(Regex("(?<=[.!?])\\s+")).first() }
     if (s.length <= LENS_MAX) return s
     val cut = s.take(LENS_MAX - 1)
     return cut.take(maxOf(cut.lastIndexOf(' '), LENS_MAX / 2)).trimEnd(',', ';', ':', ' ') + "…"
+}
+
+/** The longer words of a note, for comparing notes. */
+private fun noteWords(text: String): Set<String> = NOTE_WORD.findAll(text.lowercase()).map { it.value }.toSet()
+
+/** Whether a note mostly says what [earlier] already said. */
+fun repeatsNote(note: String, earlier: String): Boolean {
+    val words = noteWords(note)
+    if (words.isEmpty()) return false
+    val said = noteWords(earlier)
+    return words.count { it in said }.toDouble() / words.size >= REPEATED_WORDS
 }
 
 /** What finish returned: the summary for the phone and its one-line version for the lens. */
@@ -206,15 +221,20 @@ class AgentRun(
         var summary: String? = null
         var lens: String? = null
         var outcome = Outcome.DONE
+        var lastNote = ""
         try {
             for (round in 0 until MAX_ROUNDS) {
                 for (t in pending.toList()) input.add(userText("[Photographer] $t"))
                 pending.clear()
                 ui.status(if (round == 0) "Thinking…" else "Deciding next step…")
                 val res = api.step(opts.session, withRecentImages(withoutOldRounds(input)), context())
-                // The model often says the same thing in its commentary and in tell_user; show it once.
-                val told = res.calls.any { it.name == "tell_user" && it.arguments.contains(res.commentary.take(24)) }
-                if (res.commentary.isNotEmpty() && !told) ui.step(StepEntry(StepKind.THINK, res.commentary))
+                // The model often says the same thing in its commentary, in tell_user and again a
+                // round later, in other words; show it once.
+                if (res.commentary.isNotEmpty()) {
+                    val told = res.calls.any { it.name == "tell_user" }
+                    if (!told && !repeatsNote(res.commentary, lastNote)) ui.step(StepEntry(StepKind.THINK, res.commentary))
+                    lastNote = res.commentary
+                }
                 if (res.calls.isEmpty()) {
                     // Answered in text instead of finishing: treat that as the summary.
                     if (res.text.isNotEmpty()) {

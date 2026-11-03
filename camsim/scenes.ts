@@ -206,7 +206,7 @@ const SPECS: Record<string, SceneSpec> = {
   concert: {
     id: "concert",
     title: "Club gig under LED lights",
-    blurb: "A small club stage lit by dimmed LED panels. Silent shutter at 1/800: dark stripes run across every frame.",
+    blurb: "A small club stage lit by dimmed LED panels. Silent shutter at 1/2000: dark stripes run across every frame.",
     goals: ["Shoot silently, but get rid of the dark stripes", "Sharp singer at a fast shutter speed, no banding", "Singer sharp, band softly blurred behind", "Freeze the singer with flash, no stripes on her"],
     layers: [
       { name: "stage", file: "scenes/concert/plate.jpg", depth: 12, ev: 8.5, kelvin: 5200, highlights: { knee: 0.8, gain: 25, box: [0, 0, 1, 0.75] }, flicker: { light: STAGE_LEDS } },

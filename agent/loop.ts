@@ -93,6 +93,8 @@ const FOLLOW_UP_SHOTS = 3;
 const IDEA_SIDE = 400;
 /** Longest summary the glasses' lens shows. */
 const LENS_MAX = 90;
+/** Share of a note's words already said that makes it a repeat. */
+const REPEATED_WORDS = 0.4;
 
 /** One line for the lens: the model's own short version, or the summary's first sentence, cut at a word. */
 export function lensLine(summary: string, short = ""): string {
@@ -100,6 +102,17 @@ export function lensLine(summary: string, short = ""): string {
   if (s.length <= LENS_MAX) return s;
   const cut = s.slice(0, LENS_MAX - 1);
   return `${cut.slice(0, Math.max(cut.lastIndexOf(" "), LENS_MAX / 2)).replace(/[,;:\s]+$/, "")}…`;
+}
+
+/** The longer words of a note, for comparing notes. */
+const noteWords = (text: string) => new Set(text.toLowerCase().match(/[\p{L}\p{N}]{4,}/gu) ?? []);
+
+/** Whether a note mostly says what `earlier` already said. */
+export function repeatsNote(note: string, earlier: string): boolean {
+  const words = noteWords(note);
+  if (!words.size) return false;
+  const said = noteWords(earlier);
+  return [...words].filter((w) => said.has(w)).length / words.size >= REPEATED_WORDS;
 }
 
 type Item = Record<string, unknown>;
@@ -212,6 +225,7 @@ export class AgentRun {
     let summary: string | null = null;
     let lens: string | null = null;
     let outcome: "done" | "cancelled" | "error" = "done";
+    let lastNote = "";
     try {
       for (let round = 0; round < MAX_ROUNDS; round++) {
         for (const t of this.pending.splice(0)) this.input.push({ role: "user", content: [{ type: "input_text", text: `[Photographer] ${t}` }] });
@@ -219,9 +233,13 @@ export class AgentRun {
         this.ui.status(round === 0 ? "Thinking…" : "Deciding next step…");
         const res = await this.api.step({ session: this.opts.session, input: withRecentImages(withoutOldRounds(this.input)), context: this.context() }, signal);
         if (signal.aborted) throw new DOMException("cancelled", "AbortError");
-        // The model often says the same thing in its commentary and in tell_user; show it once.
-        const told = res.calls.some((c) => c.name === "tell_user" && c.arguments.includes(res.commentary.slice(0, 24)));
-        if (res.commentary && !told) this.ui.step({ kind: "think", text: res.commentary });
+        // The model often says the same thing in its commentary, in tell_user and again a
+        // round later, in other words; show it once.
+        if (res.commentary) {
+          const told = res.calls.some((c) => c.name === "tell_user");
+          if (!told && !repeatsNote(res.commentary, lastNote)) this.ui.step({ kind: "think", text: res.commentary });
+          lastNote = res.commentary;
+        }
         if (!res.calls.length) {
           // Answered in text instead of finishing: treat that as the summary.
           if (res.text) {

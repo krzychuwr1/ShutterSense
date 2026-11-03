@@ -628,7 +628,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app), RoomListener {
             busy = owner.busy
             when (entry.kind) {
                 StepKind.TELL -> hud = hud.copy(message = entry.text)
-                StepKind.GOAL -> hud = hud.copy(goal = entry.text)
+                // The lens shows what the photographer asked for last, not only the first goal.
+                StepKind.GOAL, StepKind.INSTRUCTION -> hud = hud.copy(goal = entry.text)
                 // The ideas stay on the lens to flip through until the next goal.
                 StepKind.IDEAS -> if (entry.ideas.isNotEmpty()) hud = hud.copy(ideas = entry.ideas)
                 else -> {}

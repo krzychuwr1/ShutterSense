@@ -172,7 +172,9 @@ export class CameraPanel {
     const st = s.settings;
     const mode = String(st.shootingmode);
     const e = s.exposure;
-    const tv = mode === "tv" || mode === "m" ? String(st.tv) : e.tv;
+    // With high-frequency anti-flicker on, Tv and M shoot at its matched speed, not the Tv setting.
+    const manualTv = st.hfantiflickershoot === "enable" ? String(st.hfflickertv) : String(st.tv);
+    const tv = mode === "tv" || mode === "m" ? manualTv : e.tv;
     const av = mode === "av" || mode === "m" ? String(st.av) : e.av;
     const iso = st.iso === "auto" ? `AUTO ${e.isoValue}` : String(st.iso);
     const wb = st.wb === "colortemp" ? `${st.colortemperature}K` : String(st.wb).toUpperCase();
