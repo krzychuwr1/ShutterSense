@@ -8,14 +8,15 @@
 // pattern the page hands it.
 
 import { EMPTY_HUD, PATTERN_LENGTH, type HudState, type ServerMessage } from "../../shared/protocol.ts";
+import { speakable } from "../../shared/speech.ts";
 import { claimPattern, RoomConn, roomExists, type NewRoom } from "./conn.ts";
+import { arrow } from "./brand.ts";
 import { menuScreen, screenHint } from "./camera-menu.ts";
 import { el, esc, h } from "./dom.ts";
 
 const ROOM_KEY = "shuttersense:glasses";
 const KEY_FOR: Record<string, string> = { U: "ArrowUp", D: "ArrowDown", L: "ArrowLeft", R: "ArrowRight" };
 const MOVE: Record<string, string> = { ArrowUp: "U", ArrowDown: "D", ArrowLeft: "L", ArrowRight: "R" };
-const ARROW: Record<string, string> = { U: "↑", D: "↓", L: "←", R: "→" };
 
 const store = (sim: boolean) => (sim ? sessionStorage : localStorage);
 
@@ -66,7 +67,7 @@ export async function startGlasses(root: HTMLElement) {
   // ---------------------------------------------------------------- pairing
 
   const renderHome = (wrong = false) => {
-    const slots = Array.from({ length: PATTERN_LENGTH }, (_, i) => `<span class="${i < moves.length ? "on" : ""}">${i < moves.length ? ARROW[moves[i]] : ""}</span>`).join("");
+    const slots = Array.from({ length: PATTERN_LENGTH }, (_, i) => `<span class="${i < moves.length ? "on" : ""}">${i < moves.length ? arrow(moves[i]) : ""}</span>`).join("");
     lens.replaceChildren(
       h(`<div class="pair">
         <div class="pair-title">Shutter Sense</div>
@@ -323,8 +324,9 @@ export async function startGlasses(root: HTMLElement) {
           case "hud": {
             const was = hud;
             hud = m.hud;
-            if (m.hud.message && m.hud.message !== was.message) void speak(m.hud.message);
-            if (m.hud.phase === "done" && was.phase !== "done") void speak(m.hud.summary ? `Done. ${m.hud.summary}` : "Done.");
+            // A progress note waits its turn (dropped if a line is still playing; it stays on the lens); the end is always said.
+            if (m.hud.message && m.hud.message !== was.message) void speak(m.hud.message, false);
+            if (m.hud.phase === "done" && was.phase !== "done") void speak(m.hud.summary ? `Done. ${m.hud.summary}` : "Done.", true);
             break;
           }
           case "presence":
@@ -377,14 +379,16 @@ export async function startGlasses(root: HTMLElement) {
     speechSynthesis.cancel();
     speechSynthesis.speak(u);
   };
-  const speak = async (text: string) => {
-    if (!voiceOn || !text) return;
+  const talking = () => (playing !== null && !playing.paused && !playing.ended) || ("speechSynthesis" in window && speechSynthesis.speaking);
+  const speak = async (line: string, interrupt: boolean) => {
+    const text = speakable(line);
+    if (!voiceOn || !text || (!interrupt && talking())) return;
     if (serverVoice) {
       try {
         const res = await fetch("/api/speak", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text }) });
         if (res.ok) {
           const blob = await res.blob();
-          if (!voiceOn) return;
+          if (!voiceOn || (!interrupt && talking())) return;
           stopAudio();
           playing = new Audio(URL.createObjectURL(blob));
           await playing.play();

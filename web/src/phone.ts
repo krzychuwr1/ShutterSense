@@ -8,12 +8,11 @@ import type { CameraTools, ShotResult } from "../../agent/camera-tools.ts";
 import { cleanPreset, DEFAULT_MAX_SHOTS, PRESET_LIMITS, presetKey, type AgentResponse, type Idea, type InspireResponse, type Preset } from "../../shared/agent-api.ts";
 import { EMPTY_HUD, shotReply, type HudState, type ServerMessage } from "../../shared/protocol.ts";
 import { createRoom, RoomConn, type NewRoom } from "./conn.ts";
-import { icon as spriteIcon } from "./brand.ts";
+import { arrow, icon as spriteIcon } from "./brand.ts";
 import { menuGuide } from "./camera-menu.ts";
-import { el, lightbox } from "./dom.ts";
+import { el, h, lightbox } from "./dom.ts";
 import { Recorder, transcribeBlob } from "./voice.ts";
 
-const ARROW: Record<string, string> = { U: "↑", D: "↓", L: "←", R: "→" };
 
 const ICONS: Record<string, string> = {
   goal: '<path d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm-7 8a7 7 0 0 1 14 0"/>',
@@ -736,7 +735,7 @@ export class PhoneApp {
     } else if (this.pattern) {
       children.push(
         el("p", {}, ["Open Shutter Sense on the glasses and swipe these arrows with the Neural Band:"]),
-        el("div", { class: "arrows" }, [...this.pattern].map((m) => el("span", {}, [ARROW[m]]))),
+        el("div", { class: "arrows" }, [...this.pattern].map((m) => el("span", {}, [h(arrow(m))]))),
       );
     } else children.push(el("p", { class: "muted" }, ["Getting a pairing pattern…"]));
     if (!this.glassesOnline && !error) {

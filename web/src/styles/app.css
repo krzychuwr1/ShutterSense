@@ -285,7 +285,8 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .sheet p { margin: 0; }
 .sheet-head { display: flex; justify-content: space-between; align-items: center; font-size: 16px; }
 .arrows { display: flex; gap: 6px; justify-content: center; flex-wrap: wrap; }
-.arrows span { width: 36px; height: 44px; display: grid; place-items: center; font-size: 22px; font-weight: 700; border-radius: 12px; background: var(--blue-soft); color: var(--blue); }
+.arrows span { width: 36px; height: 44px; display: grid; place-items: center; border-radius: 12px; background: var(--blue-soft); color: var(--blue); }
+.arrows .arrow { width: 22px; height: 22px; }
 .sheet:has(.preset-row) { max-height: calc(100% - 20px); overflow-y: auto; }
 .preset-row { display: grid; gap: 6px; padding-top: 10px; border-top: 1px solid var(--line); }
 .preset-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }

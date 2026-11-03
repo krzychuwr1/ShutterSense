@@ -39,3 +39,15 @@ export const use = (id: string, cls = "") => `<svg${cls ? ` class="${cls}"` : ""
 
 /** A sprite icon as an element. */
 export const icon = (id: string, cls = "") => h(use(id, cls));
+
+const MOVES: Record<string, [number, string]> = { U: [0, "up"], R: [90, "right"], D: [180, "down"], L: [270, "left"] };
+
+/**
+ * A pairing move as an arrow. One drawing turned four ways: the ↑ ← characters
+ * come from different fonts on some phones and don't match in size. Standalone
+ * (no sprite), so the glasses page can use it too.
+ */
+export const arrow = (move: string) => {
+  const [deg, name] = MOVES[move] ?? [0, move];
+  return `<svg class="arrow" viewBox="0 0 24 24" role="img" aria-label="${name}"><path transform="rotate(${deg} 12 12)" d="M12 19.5V4.5M5.5 11l6.5-6.5 6.5 6.5" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+};

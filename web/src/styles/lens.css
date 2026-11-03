@@ -42,7 +42,8 @@ body.glasses-body #app {
 .pair-title { color: var(--l-accent); font-weight: 700; font-size: 26px; }
 .pair-label { font-size: 30px; font-weight: 650; }
 .pattern { display: flex; justify-content: center; gap: 8px; }
-.pattern span { width: 54px; height: 64px; border: 2px solid rgba(255, 255, 255, 0.35); border-radius: 12px; display: grid; place-items: center; font-size: 34px; color: var(--l-accent); }
+.pattern span { width: 54px; height: 64px; border: 2px solid rgba(255, 255, 255, 0.35); border-radius: 12px; display: grid; place-items: center; color: var(--l-accent); }
+.pattern .arrow { width: 32px; height: 32px; }
 .pattern span.on { border-color: var(--l-accent); }
 .pattern.wrong span { border-color: var(--l-bad); }
 .pair-help { color: var(--l-soft); font-size: 21px; }

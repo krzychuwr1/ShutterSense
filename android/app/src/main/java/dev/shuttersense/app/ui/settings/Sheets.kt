@@ -21,6 +21,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.HelpOutline
+import androidx.compose.material.icons.rounded.ArrowUpward
 import androidx.compose.material.icons.rounded.Bookmark
 import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.DeleteOutline
@@ -40,10 +41,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import dev.shuttersense.app.agent.Preset
 import dev.shuttersense.app.agent.presetLines
 import dev.shuttersense.app.glasses.RoomState
@@ -214,7 +215,8 @@ private fun PresetRow(p: Preset, vm: AppViewModel) {
 
 // ------------------------------------------------------------------ glasses
 
-private val ARROWS = mapOf('U' to "↑", 'D' to "↓", 'L' to "←", 'R' to "→")
+/** Each move as a turn of one arrow icon: the ↑ ← characters come from different fonts and don't match in size. */
+private val ARROWS = mapOf('U' to (0f to "up"), 'R' to (90f to "right"), 'D' to (180f to "down"), 'L' to (270f to "left"))
 
 @Composable
 fun GlassesSheet(vm: AppViewModel) {
@@ -245,7 +247,10 @@ fun GlassesSheet(vm: AppViewModel) {
                             Box(
                                 Modifier.weight(1f).aspectRatio(0.8f).clip(RoundedCornerShape(12.dp)).background(Palette.Raised2),
                                 contentAlignment = Alignment.Center,
-                            ) { Text(ARROWS[c] ?: "?", fontSize = 24.sp, color = Palette.Accent) }
+                            ) {
+                                val (deg, name) = ARROWS[c] ?: (0f to c.toString())
+                                Icon(Icons.Rounded.ArrowUpward, name, Modifier.size(26.dp).rotate(deg), tint = Palette.Accent)
+                            }
                         }
                     }
                     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
