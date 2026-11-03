@@ -33,7 +33,7 @@ export class RoomConn {
     const forced = new URLSearchParams(location.search).get("transport");
     let remembered: string | null = null;
     try {
-      remembered = sessionStorage.getItem("secondshooter:transport");
+      remembered = sessionStorage.getItem("shuttersense:transport");
     } catch {
       // storage unavailable
     }
@@ -143,7 +143,7 @@ export class RoomConn {
   private fallBackToSse() {
     this.mode = "sse";
     try {
-      sessionStorage.setItem("secondshooter:transport", "sse");
+      sessionStorage.setItem("shuttersense:transport", "sse");
     } catch {
       // storage unavailable
     }

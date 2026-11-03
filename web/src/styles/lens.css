@@ -61,7 +61,7 @@ body.glasses-body #app {
 .hud-step.bad { color: var(--l-bad); }
 .spin { width: 22px; height: 22px; border-radius: 50%; border: 3px solid rgba(255, 195, 92, 0.3); border-top-color: var(--l-accent); animation: spin 0.9s linear infinite; flex: none; }
 @keyframes spin { to { transform: rotate(360deg); } }
-.hud-summary { font-size: 21px; line-height: 1.35; color: var(--l-text); max-height: 250px; overflow: hidden; }
+.hud-summary { font-size: 22px; line-height: 1.35; color: var(--l-text); display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4; overflow: hidden; }
 .hud-summary b { color: var(--l-good); }
 .hud-media { display: flex; gap: 14px; align-items: flex-start; min-height: 0; }
 .hud-media img { width: 300px; height: 200px; object-fit: cover; border-radius: 10px; flex: none; }
@@ -79,3 +79,13 @@ body.glasses-body #app {
 .lens .focus { border-color: var(--l-accent) !important; background: rgba(255, 195, 92, 0.14); }
 .hud-flash { position: absolute; left: 26px; right: 26px; bottom: 90px; text-align: center; font-size: 20px; color: var(--l-good); opacity: 0; transition: opacity 0.2s; pointer-events: none; }
 .hud-flash.on { opacity: 1; }
+
+/* Menu steps: what to press on the camera, readable at a glance. */
+.hud-guide { border: 2px solid var(--l-accent); border-radius: 14px; padding: 10px 14px; }
+.hud-guide-title { color: var(--l-accent); font-weight: 700; font-size: 21px; margin-bottom: 4px; }
+.hud-guide ol { margin: 0; padding-left: 28px; font-size: 20px; line-height: 1.3; }
+
+/* The camera screen scales with its width (see camera-menu.css): 350px keeps the rows legible. */
+.hud-guide-menu { display: grid; grid-template-columns: 350px minmax(0, 1fr); gap: 14px; align-items: center; margin-top: 6px; }
+.hud-guide-menu .cm-screen { border-radius: 6px; }
+.hud-guide-hint { font-size: 19px; line-height: 1.3; color: var(--l-soft); }

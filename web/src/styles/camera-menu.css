@@ -1,0 +1,124 @@
+/* Camera menu screens, drawn like the camera's own: black panel, a row of tab
+   icons with the current tab filled in its colour and a line of that colour
+   under it, the tab's page numbers, grey row strips with values on the
+   right, and the cursor (an outline in the tab colour with bars at both
+   edges) on the row to pick. Sub-screens show the setting's title and its
+   options, the current one in blue. Sizes follow the screen's width (cqw),
+   so the same drawing works on the phone card and the glasses lens. */
+
+.cm-screen {
+  --cm-tab: #a00412;
+  --cm-tab-dim: #520008;
+  --cm-row: #1e1e1e;
+  --cm-text: #f2f2f2;
+  --cm-dim: #6e6e6e;
+  --cm-cur: #2bb7ea;
+  container-type: inline-size;
+  aspect-ratio: 4 / 3;
+  background: #000;
+  border-radius: 10px;
+  overflow: hidden;
+  user-select: none;
+  box-shadow: inset 0 0 0 1px #1d1d1d;
+}
+.cm-screen[data-tab="shoot"] { --cm-tab: #a00412; --cm-tab-dim: #520008; }
+.cm-screen[data-tab="af"] { --cm-tab: #a8007c; --cm-tab-dim: #580042; }
+.cm-screen[data-tab="play"] { --cm-tab: #0a55ad; --cm-tab-dim: #002a58; }
+.cm-screen[data-tab="wireless"] { --cm-tab: #6a1ca8; --cm-tab-dim: #380a60; }
+.cm-screen[data-tab="setup"] { --cm-tab: #a08400; --cm-tab-dim: #584600; }
+.cm-screen[data-tab="custom"] { --cm-tab: #a84600; --cm-tab-dim: #582600; }
+.cm-screen[data-tab="mymenu"] { --cm-tab: #006c24; --cm-tab-dim: #003a12; }
+
+.cm-panel {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  color: var(--cm-text);
+  font: 400 4.6cqw/1.1 "Segoe UI", Roboto, system-ui, -apple-system, sans-serif;
+}
+
+/* tab bar and page numbers */
+.cm-tabs { display: grid; grid-template-columns: repeat(7, 1fr); height: 9cqw; border-bottom: 0.6cqw solid var(--cm-tab); flex: none; }
+.cm-tab { display: grid; place-items: center; color: #d8d8d8; }
+.cm-tab.on { background: var(--cm-tab); color: #fff; }
+.cm-icon svg { width: 6.4cqw; height: 6.4cqw; display: block; }
+.cm-pages { display: flex; height: 7.5cqw; flex: none; padding-left: 1cqw; }
+.cm-pages span { width: 9.6cqw; display: grid; place-items: center; font-size: 4.2cqw; color: #cfcfcf; }
+.cm-pages span.on { background: var(--cm-tab-dim); color: #fff; font-weight: 700; }
+.cm-heading { flex: none; padding: 0.8cqw 3cqw 0; font-size: 4.4cqw; }
+
+/* rows: grey strips; the cursor is an outline in the tab colour with bars at both edges */
+.cm-screen .cm-rows {
+  list-style: none;
+  margin: 1.4cqw 0 0;
+  padding: 0;
+  font-size: inherit;
+  line-height: inherit;
+  flex: 1;
+  display: grid;
+  grid-template-rows: repeat(var(--cm-slots, 7), minmax(0, 1fr));
+  gap: 0.45cqw;
+  min-height: 0;
+}
+.cm-rows li, .cm-popup li { display: flex; align-items: center; min-width: 0; padding: 0 3cqw 0 5cqw; background: var(--cm-row); white-space: nowrap; }
+.cm-rows.sub li { padding-left: 4cqw; }
+.cm-rows li.empty { background: var(--cm-row); }
+.cm-rows.sub li.empty { background: transparent; }
+.cm-label { flex: 0 1 auto; min-width: 54%; overflow: hidden; text-overflow: ellipsis; padding-right: 2cqw; }
+.cm-val { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--cm-text); }
+.cm-val.r { text-align: right; }
+li.dim, li.dim .cm-val { color: var(--cm-dim); }
+li.cur, li.cur .cm-val { color: var(--cm-cur); }
+.cm-rows li.on, .cm-popup li.on {
+  background: #000;
+  box-shadow: inset 0 0 0 0.55cqw var(--cm-tab);
+  border-left: 3.4cqw solid var(--cm-tab);
+  border-right: 3.4cqw solid var(--cm-tab);
+  padding-left: 1.6cqw;
+  padding-right: 0.8cqw;
+}
+.cm-rows.sub li.on { padding-left: 0.6cqw; }
+
+/* sub-screens: title with a line in the tab colour, footer button hint */
+.cm-panel.sub .cm-rows { margin-top: 2cqw; flex: 0 1 calc(var(--cm-slots) * 8.2cqw); }
+.cm-head { flex: none; margin: 0 3cqw; padding: 3cqw 1cqw 1.4cqw; border-bottom: 0.45cqw solid var(--cm-tab); font-size: 4.9cqw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cm-foot { margin-top: auto; display: flex; justify-content: flex-end; padding: 0 3cqw 2.4cqw; }
+.cm-key { display: inline-flex; align-items: center; gap: 1cqw; border: 0.3cqw solid #5a5a5a; border-radius: 1cqw; padding: 0.5cqw 1.4cqw 0.5cqw 0.6cqw; font-size: 4.2cqw; }
+.cm-key b { background: #fff; color: #000; border-radius: 0.6cqw; padding: 0.2cqw 1.4cqw; font-size: 3.6cqw; }
+
+/* drop-down options beside their row */
+.cm-popbody { position: relative; margin-top: 2cqw; flex: 1; }
+.cm-poprow { position: absolute; left: 0; right: 0; top: calc(var(--cm-at) * 8.2cqw); height: 7.8cqw; display: flex; align-items: center; padding-left: 4cqw; background: var(--cm-tab); }
+.cm-screen .cm-popup {
+  position: absolute;
+  font-size: inherit;
+  line-height: inherit;
+  left: 50%;
+  right: 3cqw;
+  top: 0;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-auto-rows: 7.8cqw;
+  gap: 0.4cqw;
+  border: 0.5cqw solid var(--cm-tab);
+  background: #000;
+}
+.cm-popup li { padding-left: 4cqw; background: #000; }
+.cm-popup li.on { border-right-width: 0.55cqw; border-left-width: 0.55cqw; padding-left: 3.5cqw; }
+.cm-popup li.on::before { content: "▸"; margin: 0 1cqw 0 -2.6cqw; color: #fff; }
+
+/* step-through guide */
+.cm-guide { display: grid; gap: 8px; max-width: 340px; }
+.cm-stage .cm-screen { animation: cm-in 0.25s ease-out; }
+@keyframes cm-in { from { opacity: 0.4; transform: translateX(6px); } }
+.cm-controls { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.cm-nav { width: 32px; height: 28px; border-radius: 8px; border: 1px solid rgba(127, 127, 127, 0.35); background: transparent; color: inherit; cursor: pointer; font-size: 18px; line-height: 1; }
+.cm-nav:disabled { opacity: 0.3; cursor: default; }
+.cm-dots { display: flex; gap: 5px; }
+.cm-dots span { width: 6px; height: 6px; border-radius: 50%; background: rgba(127, 127, 127, 0.45); }
+.cm-dots span.on { background: currentColor; }
+.cm-hint { font-size: 13.5px; }
+.cm-note { font-size: 11.5px; opacity: 0.6; }
+@media (prefers-reduced-motion: reduce) { .cm-stage .cm-screen { animation: none; } }

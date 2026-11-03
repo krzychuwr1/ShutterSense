@@ -8,6 +8,8 @@ import type { CameraTools, ShotResult } from "../../agent/camera-tools.ts";
 import { DEFAULT_MAX_SHOTS, type AgentResponse } from "../../shared/agent-api.ts";
 import { EMPTY_HUD, type HudState, type ServerMessage } from "../../shared/protocol.ts";
 import { createRoom, RoomConn, type NewRoom } from "./conn.ts";
+import { icon as spriteIcon } from "./brand.ts";
+import { menuGuide } from "./camera-menu.ts";
 import { el } from "./dom.ts";
 import { Recorder, transcribeBlob } from "./voice.ts";
 
@@ -20,6 +22,7 @@ const ICONS: Record<string, string> = {
   look: '<path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/>',
   settings: '<path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/>',
   shot: '<path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/>',
+  guide: '<path d="M9 11V5.5a1.8 1.8 0 0 1 3.6 0V11m0-1.2a1.8 1.8 0 0 1 3.6 0V12m0-1a1.8 1.8 0 0 1 3.6 0v3.5A6.5 6.5 0 0 1 13.3 21h-1a6 6 0 0 1-4.6-2.2L4.6 15a1.9 1.9 0 0 1 2.8-2.5L9 14"/>',
   tell: '<path d="M4 5h16v11H8l-4 4z"/>',
   ask: '<circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .8-1 1.5v.7M12 17h0"/>',
   answer: '<path d="M20 6 9 17l-5-5"/>',
@@ -40,6 +43,7 @@ const LABEL: Record<string, string> = {
   look: "Look",
   settings: "Settings",
   shot: "Test shot",
+  guide: "Camera menu",
   tell: "Agent",
   ask: "Question",
   answer: "Your answer",
@@ -49,7 +53,7 @@ const LABEL: Record<string, string> = {
 
 function load<T>(key: string, fallback: T): T {
   try {
-    const v = localStorage.getItem(`secondshooter:${key}`);
+    const v = localStorage.getItem(`shuttersense:${key}`);
     return v === null ? fallback : (JSON.parse(v) as T);
   } catch {
     return fallback;
@@ -58,7 +62,7 @@ function load<T>(key: string, fallback: T): T {
 
 function save(key: string, value: unknown) {
   try {
-    localStorage.setItem(`secondshooter:${key}`, JSON.stringify(value));
+    localStorage.setItem(`shuttersense:${key}`, JSON.stringify(value));
   } catch {
     // storage unavailable: setting lasts for this page only
   }
@@ -66,8 +70,8 @@ function save(key: string, value: unknown) {
 
 const session = (() => {
   try {
-    let s = sessionStorage.getItem("secondshooter:session");
-    if (!s) sessionStorage.setItem("secondshooter:session", (s = crypto.randomUUID()));
+    let s = sessionStorage.getItem("shuttersense:session");
+    if (!s) sessionStorage.setItem("shuttersense:session", (s = crypto.randomUUID()));
     return s;
   } catch {
     return crypto.randomUUID();
@@ -88,6 +92,8 @@ export interface PhoneOptions {
   goals: () => string[];
   /** Short name of the camera connection, shown in the connect card. */
   cameraLabel: string;
+  /** Shows simulated glasses at `url` (embedded in the page) and returns their window; without it they open in a pop-up. */
+  simGlasses?: (url: string) => Window | null;
 }
 
 export class PhoneApp {
@@ -114,7 +120,9 @@ export class PhoneApp {
   private newBtn: HTMLButtonElement;
 
   // run state
+  /** The first live view taken before the agent changed anything: the camera's own idea of the shot. */
   private firstLook: string | null = null;
+  private settingsTouched = false;
   private shots: ShotResult[] = [];
   private question: { resolve: (a: string) => void; card: HTMLElement } | null = null;
   private recorder = new Recorder();
@@ -138,7 +146,7 @@ export class PhoneApp {
     this.statusEl = el("div", { class: "run-status" });
     this.chips = el("div", { class: "chips" });
     this.compare = el("div", { class: "compare", hidden: true });
-    this.input = el("textarea", { rows: "2", placeholder: "What do you want? e.g. “She's backlit, fix it”", "aria-label": "Goal for the agent" });
+    this.input = el("textarea", { rows: "2", placeholder: "What do you want? e.g. “Freeze the dog mid-stride”", "aria-label": "Goal for the agent" });
     this.goBtn = el("button", { class: "btn primary go", type: "button" }, ["Go"]);
     this.micBtn = el("button", { class: "btn icon-btn mic", type: "button", title: "Speak your goal", "aria-label": "Speak" });
     this.micBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>';
@@ -146,7 +154,7 @@ export class PhoneApp {
     this.cancelBtn = el("button", { class: "btn ghost small", type: "button", hidden: true }, ["Cancel"]);
     this.glassesBtn = el("button", { class: "btn ghost small glasses-btn", type: "button" }, ["Connect glasses"]);
     this.sheet = el("div", { class: "sheet", hidden: true });
-    this.newBtn = el("button", { class: "btn ghost small", type: "button", hidden: true }, ["New goal"]);
+    this.newBtn = el("button", { class: "btn ghost small new-btn", type: "button", hidden: true }, ["New goal"]);
     this.newBtn.addEventListener("click", () => this.reset());
 
     const askToggle = el("input", { type: "checkbox", checked: this.askBefore });
@@ -156,7 +164,7 @@ export class PhoneApp {
 
     this.root = el("div", { class: "phone-app" }, [
       el("header", { class: "app-bar" }, [
-        el("div", { class: "app-title" }, [el("strong", {}, ["Second Shooter"])]),
+        el("div", { class: "app-title" }, [spriteIcon("logo", "logo"), el("span", { class: "app-name" }, ["Shutter Sense"])]),
         this.newBtn,
         this.glassesBtn,
       ]),
@@ -246,7 +254,9 @@ export class PhoneApp {
   private renderEmpty() {
     this.log.replaceChildren(
       el("div", { class: "empty" }, [
-        el("p", {}, ["Tell the agent what you want from the shot. It looks through the camera, changes settings, takes test shots and checks them until the photo matches."]),
+        el("span", { class: "empty-mark" }, [spriteIcon("i-cam")]),
+        el("p", { class: "empty-title" }, ["What do you want from the shot?"]),
+        el("p", {}, ["The agent looks through the camera, changes the settings that matter, takes test shots and checks them until the photo matches. Settings it can't reach, it walks you to on the camera's menu."]),
         el("p", { class: "muted" }, ["Pick an example below, type your own, or tap the mic."]),
       ]),
     );
@@ -277,11 +287,12 @@ export class PhoneApp {
     this.hud = { ...EMPTY_HUD, exposure: this.hud.exposure };
     this.pushHud();
     this.firstLook = null;
+    this.settingsTouched = false;
     this.shots = [];
     this.compare.hidden = true;
     this.renderEmpty();
     this.setRunning(false);
-    this.input.focus();
+    this.input.focus({ preventScroll: true });
   }
 
   private startGoal(goal: string) {
@@ -294,6 +305,7 @@ export class PhoneApp {
     });
     this.log.replaceChildren();
     this.firstLook = null;
+    this.settingsTouched = false;
     this.shots = [];
     this.compare.hidden = true;
     this.hud = { ...EMPTY_HUD, exposure: this.hud.exposure, goal, phase: "working", shots: { taken: 0, max: this.maxShots } };
@@ -313,6 +325,7 @@ export class PhoneApp {
     if (!q) return;
     this.question = null;
     q.card.querySelectorAll("button").forEach((b) => ((b as HTMLButtonElement).disabled = true));
+    q.card.classList.add("answered");
     this.hud.question = null;
     this.hud.phase = "working";
     this.pushHud();
@@ -324,7 +337,7 @@ export class PhoneApp {
     this.cancelBtn.hidden = !on;
     this.goBtn.textContent = on || this.hud.goal ? "Send" : "Go";
     this.newBtn.hidden = !this.hud.goal;
-    this.input.placeholder = on ? "Correct it while it works: “a bit warmer”" : this.hud.goal ? "Follow up (“a bit brighter”) or a new goal" : "What do you want? e.g. “She's backlit, fix it”";
+    this.input.placeholder = on ? "Correct it while it works: “a bit warmer”" : this.hud.goal ? "Follow up (“a bit brighter”) or a new goal" : "What do you want? e.g. “Freeze the dog mid-stride”";
   }
 
   // ---------------------------------------------------------------- agent UI
@@ -389,14 +402,14 @@ export class PhoneApp {
             this.question = null;
             reject(new DOMException("cancelled", "AbortError"));
           });
-          this.input.focus();
+          this.input.focus({ preventScroll: true });
         }),
-      ended: (outcome, summary) => {
+      ended: (outcome, _summary, lens) => {
         if (!live()) return;
         this.setRunning(false);
         this.question = null;
         this.hud.phase = outcome === "done" ? "done" : "error";
-        this.hud.summary = summary;
+        this.hud.summary = lens;
         this.hud.question = null;
         this.hud.step = outcome === "done" ? "Done" : outcome === "cancelled" ? "Cancelled" : "Stopped";
         this.pushHud();
@@ -406,12 +419,31 @@ export class PhoneApp {
   }
 
   private addStep(e: StepEntry) {
-    if (e.kind === "look" && !this.firstLook && e.image) this.firstLook = e.image;
+    if (e.kind === "look" && !this.firstLook && !this.settingsTouched && e.image) this.firstLook = e.image;
+    if (e.kind === "settings" && e.detail?.length) this.settingsTouched = true;
+    // Menu steps stay on the lens until the photographer has done them.
+    if (e.kind === "guide") {
+      this.hud.guide = { setting: e.title ?? "", steps: e.detail ?? [], menu: e.menu ?? [] };
+      this.pushHud();
+    } else if (this.hud.guide && e.kind !== "ask" && e.kind !== "answer") {
+      this.hud.guide = null;
+      this.pushHud();
+    }
     if (e.kind === "tell") {
       this.hud.message = e.text;
       this.pushHud();
     }
     const body = el("div", { class: "step-body" }, [el("div", { class: "step-label" }, [LABEL[e.kind] ?? e.kind]), el("div", { class: "step-text" }, [e.text])]);
+    if (e.kind === "guide") {
+      // The run waits on this card: the photographer sets it by hand, then taps Done (or Skip).
+      const reply = (label: string, cls: string) => el("button", { class: `btn ${cls} small`, type: "button", onclick: () => this.answer(label) }, [label]);
+      body.replaceChildren(el("div", { class: "step-label" }, ["On the camera · set it by hand"]), el("div", { class: "guide-title" }, [e.title ?? ""]));
+      if (e.text) body.append(el("div", { class: "guide-why" }, [e.text]));
+      // The camera's own menu screens when the agent drew them; the numbered taps otherwise.
+      if (e.menu?.length) body.append(menuGuide(e.menu));
+      else body.append(el("ol", { class: "guide-steps" }, (e.detail ?? []).map((st) => el("li", {}, [st]))));
+      body.append(el("div", { class: "options guide-options" }, [reply("Done", "primary"), reply("Skip", "ghost")]));
+    }
     if (e.kind === "settings" && e.detail?.length) body.append(el("div", { class: "diff" }, e.detail.map((d) => el("span", { class: "diff-chip" }, [d]))));
     if (e.errors?.length) body.append(el("div", { class: "errors" }, e.errors.map((d) => el("div", {}, [d]))));
     if (e.kind === "shot" && e.detail?.length) body.append(el("div", { class: "shot-meta" }, [e.detail[0]]));
@@ -438,7 +470,9 @@ export class PhoneApp {
 
   private append(node: HTMLElement) {
     this.log.append(node);
-    node.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    // Scroll the log only, so the page around the phone stays put.
+    const instant = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    this.log.scrollTo({ top: this.log.scrollHeight, behavior: instant ? "auto" : "smooth" });
   }
 
   private lightbox(src: string) {
@@ -447,12 +481,16 @@ export class PhoneApp {
     document.body.append(box);
   }
 
-  /** Before/after: the first shot (or the first live view) against the last shot. */
+  /**
+   * Before/after: the camera's own settings (live view before the agent
+   * changed anything) against the last shot. Without that view, the first
+   * test shot stands in.
+   */
   private renderCompare() {
     const after = this.shots.at(-1);
-    const before = this.shots.length > 1 ? this.shots[0].image.dataUrl : this.firstLook;
+    const before = this.firstLook ?? (this.shots.length > 1 ? this.shots[0].image.dataUrl : null);
     if (!after || !before) return;
-    const beforeLabel = this.shots.length > 1 ? "First shot" : "Before (live view)";
+    const beforeLabel = this.firstLook ? "Camera's settings" : "First shot";
     const top = el("img", { src: after.image.dataUrl, alt: "After", class: "after" });
     const range = el("input", { type: "range", min: "0", max: "100", value: "50", "aria-label": "Compare before and after" });
     const frame = el("div", { class: "compare-frame" }, [el("img", { src: before, alt: "Before" }), top, el("div", { class: "compare-handle" }), range]);
@@ -505,18 +543,28 @@ export class PhoneApp {
   private async openGlassesSheet() {
     this.sheet.hidden = false;
     this.renderSheet();
+    try {
+      await this.ensureRoom();
+    } catch (e) {
+      this.renderSheet(e instanceof Error ? e.message : "Could not start a session");
+    }
+  }
+
+  /** Starts a glasses session (once) and asks for a pairing pattern unless glasses are already on. */
+  private async ensureRoom() {
     if (!this.room) {
-      try {
-        this.room = await createRoom();
-        this.conn = new RoomConn(this.room.code, "phone", (m) => this.onRoom(m), () => this.renderSheet(), this.room.token);
-        this.conn.start();
-        this.pushHud(true);
-      } catch (e) {
-        this.renderSheet(e instanceof Error ? e.message : "Could not start a session");
-        return;
-      }
+      this.room = await createRoom();
+      this.conn = new RoomConn(this.room.code, "phone", (m) => this.onRoom(m), () => this.renderSheet(), this.room.token);
+      this.conn.start();
+      this.pushHud(true);
     }
     if (!this.glassesOnline) this.conn?.send({ t: "pair" });
+  }
+
+  /** Pairs simulated glasses without the sheet (the demo page's "Connect" button). */
+  async connectSimGlasses() {
+    await this.ensureRoom();
+    this.openSimGlasses();
   }
 
   private renderSheet(error?: string) {
@@ -528,12 +576,12 @@ export class PhoneApp {
       children.push(el("p", { class: "good-text" }, ["Glasses connected. The lens shows each step, the latest settings change and the last shot. Corrections you dictate there go straight to the agent."]));
     } else if (this.pattern) {
       children.push(
-        el("p", {}, ["Open Second Shooter on the glasses and swipe these arrows with the Neural Band:"]),
+        el("p", {}, ["Open Shutter Sense on the glasses and swipe these arrows with the Neural Band:"]),
         el("div", { class: "arrows" }, [...this.pattern].map((m) => el("span", {}, [ARROW[m]]))),
       );
     } else children.push(el("p", { class: "muted" }, ["Getting a pairing pattern…"]));
     if (!this.glassesOnline && !error) {
-      const sim = el("button", { class: "btn primary small", type: "button" }, ["No glasses? Open simulated glasses ↗"]);
+      const sim = el("button", { class: "btn primary small", type: "button" }, [this.opts.simGlasses ? "No glasses? Use the simulated glasses" : "No glasses? Open simulated glasses ↗"]);
       sim.addEventListener("click", () => this.openSimGlasses());
       children.push(sim);
     }
@@ -542,7 +590,11 @@ export class PhoneApp {
 
   private openSimGlasses() {
     if (!this.room) return;
-    this.simWindow = window.open(`/g?sim=${this.room.code}`, `glasses-${this.room.code}`, "popup,width=600,height=600");
+    const url = `/g?sim=${this.room.code}`;
+    if (this.opts.simGlasses) {
+      this.simWindow = this.opts.simGlasses(url);
+      this.sheet.hidden = true;
+    } else this.simWindow = window.open(url, `glasses-${this.room.code}`, "popup,width=600,height=600");
   }
 
   /** The simulated glasses window says it's ready: hand it the pattern to swipe. */
@@ -557,7 +609,7 @@ export class PhoneApp {
       case "presence": {
         const before = this.glassesOnline;
         this.glassesOnline = m.presence.glasses;
-        this.glassesBtn.textContent = this.glassesOnline ? "Glasses ●" : "Connect glasses";
+        this.glassesBtn.textContent = this.glassesOnline ? "Glasses" : "Connect glasses";
         this.glassesBtn.classList.toggle("on", this.glassesOnline > 0);
         if (!this.sheet.hidden) this.renderSheet();
         if (this.glassesOnline > before) this.pushHud(true);

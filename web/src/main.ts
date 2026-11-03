@@ -1,7 +1,9 @@
 import "./styles/app.css";
 import "./styles/lens.css";
+import "./styles/landing.css";
 import { startDemo } from "./demo.ts";
 import { startGlasses } from "./glasses.ts";
+import { startLanding } from "./landing.ts";
 
 const root = document.getElementById("app")!;
 let [section] = location.pathname.split("/").filter(Boolean);
@@ -17,4 +19,5 @@ if (section !== "g" && onGlasses()) {
 }
 
 if (section === "g") startGlasses(root);
-else startDemo(root);
+else if (section === "try") startDemo(root);
+else startLanding(root);

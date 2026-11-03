@@ -25,7 +25,7 @@ async function loadImage(path: string): Promise<RgbaImage> {
   return { w: bitmap.width, h: bitmap.height, data };
 }
 
-const camera = VirtualCamera.create({ encodeJpeg, now: () => performance.now(), loadImage }, "backlit");
+const camera = VirtualCamera.create({ encodeJpeg, now: () => performance.now(), loadImage }, "concert");
 
 self.onmessage = async (e: MessageEvent<{ id: number; method: string; path: string; body?: unknown }>) => {
   const { id, method, path, body } = e.data;

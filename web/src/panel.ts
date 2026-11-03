@@ -1,12 +1,12 @@
-// The simulated camera, as the judge sees it: pick a scene, watch the
-// camera's rear screen (live, with its settings display), see the photos on
-// its card, and every CCAPI request the app sends it.
+// The camera, as the visitor sees it: pick a scene, watch the camera's rear
+// screen (live, with its settings display) and see the photos on its card.
 
 import type { SimStatus } from "../../camsim/camera.ts";
 import { evStops, prettyValue } from "../../shared/settings.ts";
+import { icon } from "./brand.ts";
 import { el } from "./dom.ts";
 import { blobUrl } from "./images.ts";
-import type { SimLink, TrafficEntry } from "./sim/link.ts";
+import type { SimLink } from "./sim/link.ts";
 
 export interface SceneInfo {
   id: string;
@@ -21,7 +21,7 @@ const AF: Record<string, string> = { oneshot: "One Shot", servo: "Servo", aifocu
 export class CameraPanel {
   readonly root: HTMLElement;
   scenes: SceneInfo[] = [];
-  scene = "backlit";
+  scene = "concert";
   private link: SimLink;
   private onScene: (id: string) => void;
   private sceneList: HTMLElement;
@@ -30,41 +30,72 @@ export class CameraPanel {
   private osdBottom: HTMLElement;
   private meterEl: HTMLElement;
   private card: HTMLElement;
-  private traffic: HTMLElement;
-  private trafficCount = 0;
   private lastOsd = new Map<string, string>();
   private shotThumbs = new Map<string, string>();
+  private cardCount: HTMLElement;
   private lvUrl: string | null = null;
   private busy: HTMLElement;
+  private scrollBtns: HTMLElement;
+  private prevBtn: HTMLButtonElement;
+  private nextBtn: HTMLButtonElement;
 
-  constructor(link: SimLink, onScene: (id: string) => void) {
+  /** `aside` sits next to the rear screen (the demo puts the glasses' lens there). */
+  constructor(link: SimLink, onScene: (id: string) => void, aside?: HTMLElement) {
     this.link = link;
     this.onScene = onScene;
     this.sceneList = el("div", { class: "scenes", role: "radiogroup", "aria-label": "Scene" });
-    this.lv = el("img", { class: "lv", alt: "The simulated camera's rear screen" });
+    this.lv = el("img", { class: "lv", alt: "The camera's rear screen" });
     this.osdTop = el("div", { class: "osd top" });
     this.osdBottom = el("div", { class: "osd bottom" });
     this.meterEl = el("div", { class: "meter", title: "Exposure level relative to the camera's meter" });
     this.busy = el("div", { class: "busy-flash" });
-    this.card = el("div", { class: "card-strip" }, [el("span", { class: "muted" }, ["No photos yet."])]);
-    this.traffic = el("ol", { class: "traffic" });
+    this.card = el("div", { class: "card-strip" }, [el("span", { class: "card-empty" }, ["No photos yet."])]);
+    this.cardCount = el("span", { class: "card-badge" }, ["Empty"]);
+
+    // Scenes scroll sideways, so any number fits; the arrows page through them with a mouse.
+    this.prevBtn = el("button", { class: "prev", type: "button", "aria-label": "Previous scenes", onclick: () => this.page(-1) }, [icon("i-chevron")]);
+    this.nextBtn = el("button", { class: "next", type: "button", "aria-label": "More scenes", onclick: () => this.page(1) }, [icon("i-chevron")]);
+    this.scrollBtns = el("div", { class: "scroll-btns", hidden: true }, [this.prevBtn, this.nextBtn]);
+    this.sceneList.addEventListener("scroll", () => this.updateScroll(), { passive: true });
+    new ResizeObserver(() => this.updateScroll()).observe(this.sceneList);
+
+    const head = (title: string, sub: string, lead: HTMLElement | null, trail: HTMLElement) =>
+      el("div", { class: "card-head" }, [lead, el("div", {}, [el("h3", {}, [title]), el("div", { class: "card-sub" }, [sub])]), trail]);
 
     this.root = el("div", { class: "camera-panel" }, [
       el("div", { class: "panel-head" }, [
-        el("h2", {}, ["Simulated camera"]),
-        el("p", { class: "muted" }, [
-          "A virtual mirrorless camera that speaks Canon's Camera Control API (CCAPI). The app talks to it exactly as it talks to a real body over Wi-Fi: same endpoints, same values. Exposure, metering, white balance, depth of field, motion blur, hand shake and noise are simulated physically.",
+        el("h2", {}, ["The camera"]),
+        el("p", {}, [
+          "The camera the app is driving, simulated here so you can try it without one. Exposure, metering, white balance, focus, depth of field, motion blur and noise behave as they would on a real body.",
         ]),
       ]),
-      el("h3", {}, ["1 · Pick a scene"]),
-      this.sceneList,
-      el("h3", {}, ["Rear screen ", el("span", { class: "muted small" }, ["(live view, exposure simulation)"])]),
-      el("div", { class: "screen" }, [this.lv, this.osdTop, this.osdBottom, this.meterEl, this.busy]),
-      el("h3", {}, ["Memory card"]),
-      this.card,
-      el("details", { class: "traffic-box" }, [el("summary", {}, ["CCAPI traffic ", el("span", { class: "muted small" }, ["requests the app sent"])]), this.traffic]),
+      el("section", { class: "panel-card", "aria-label": "Scene" }, [
+        head("Pick a scene", "Each one is a different problem for the agent", el("span", { class: "card-num" }, ["1"]), this.scrollBtns),
+        this.sceneList,
+      ]),
+      el("div", { class: "screens" }, [
+        el("section", { class: "panel-card", "aria-label": "Rear screen" }, [
+          head("Rear screen", "Live view, with exposure simulation", null, el("span", { class: "card-badge live" }, ["Live"])),
+          el("div", { class: "screen-body" }, [el("div", { class: "screen" }, [this.lv, this.osdTop, this.osdBottom, this.meterEl, this.busy])]),
+        ]),
+        aside,
+      ]),
+      el("section", { class: "panel-card", "aria-label": "Memory card" }, [head("Memory card", "Every test shot the agent takes. Tap one to see it full size.", null, this.cardCount), this.card]),
     ]);
-    link.onTraffic((e) => this.addTraffic(e));
+  }
+
+  /** Scrolls the scene list by about a screenful. */
+  private page(dir: number) {
+    const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    this.sceneList.scrollBy({ left: dir * this.sceneList.clientWidth * 0.9, behavior: reduce ? "auto" : "smooth" });
+  }
+
+  private updateScroll() {
+    const l = this.sceneList;
+    const max = l.scrollWidth - l.clientWidth;
+    this.scrollBtns.hidden = max <= 2;
+    this.prevBtn.disabled = l.scrollLeft <= 2;
+    this.nextBtn.disabled = l.scrollLeft >= max - 2;
   }
 
   async start() {
@@ -90,6 +121,7 @@ export class CameraPanel {
         return b;
       }),
     );
+    this.updateScroll();
   }
 
   private async pick(id: string) {
@@ -180,8 +212,9 @@ export class CameraPanel {
 
   private async renderCard(s: SimStatus) {
     if (!s.shots.length) {
-      if (this.shotThumbs.size || !this.card.querySelector(".muted")) this.card.replaceChildren(el("span", { class: "muted" }, ["No photos yet."]));
+      if (this.shotThumbs.size || !this.card.querySelector(".card-empty")) this.card.replaceChildren(el("span", { class: "card-empty" }, ["No photos yet."]));
       this.shotThumbs.clear();
+      this.cardCount.textContent = "Empty";
       return;
     }
     let added = false;
@@ -193,6 +226,7 @@ export class CameraPanel {
       added = true;
     }
     if (!added && this.card.childElementCount === s.shots.length) return;
+    this.cardCount.textContent = s.shots.length === 1 ? "1 photo" : `${s.shots.length} photos`;
     this.card.replaceChildren(
       ...s.shots
         .slice()
@@ -209,21 +243,12 @@ export class CameraPanel {
   }
 
   private async openShot(path: string) {
-    const res = await this.link.request("GET", `${path}?kind=display`);
+    let res = await this.link.request("GET", `${path}?kind=display`);
+    // Small JPEGs have no display image: the photo itself is small enough.
+    if (!res.bytes && /\.jpe?g$/i.test(path)) res = await this.link.request("GET", path);
     if (!res.bytes) return;
     const box = el("div", { class: "lightbox", role: "dialog", "aria-label": "Photo" }, [el("img", { src: blobUrl(res.bytes), alt: "" })]);
     box.addEventListener("click", () => box.remove());
     document.body.append(box);
-  }
-
-  private addTraffic(e: TrafficEntry) {
-    const ok = e.status >= 200 && e.status < 300;
-    const row = el("li", { class: ok ? "" : "bad" }, [
-      el("span", { class: "m" }, [e.method]),
-      el("span", { class: "p" }, [e.path + (e.body ? ` ${e.body}` : "")]),
-      el("span", { class: "s" }, [`${e.status} · ${e.ms} ms`]),
-    ]);
-    this.traffic.prepend(row);
-    if (++this.trafficCount > 80) this.traffic.lastElementChild?.remove();
   }
 }
