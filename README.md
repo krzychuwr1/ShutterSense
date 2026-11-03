@@ -10,9 +10,11 @@ This isn't a chatbot that comments on photos. The agent operates a real mirrorle
 
 ## Try it without a camera
 
+**Live demo: https://shuttersense.pages.dev/try** (no camera, account or install needed).
+
 The website's front page explains how the pieces fit together, with an animated diagram. **Try the simulated experience** (`/try`) runs the phone app's agent loop in your browser against a **simulated camera** that speaks CCAPI, with a simulated glasses lens next to it:
 
-1. `npm install`, then `npm run dev:worker` (it needs a Meta Model API key in `.dev.vars`, see [Setup](#setup)), open http://127.0.0.1:8790 and click **Try the simulated experience**.
+1. Open the live demo. To run it yourself instead: `npm install`, then `npm run dev:worker` (it needs a Meta Model API key in `.dev.vars`, see [Setup](#setup)), open http://127.0.0.1:8790 and click **Try the simulated experience**.
 2. Pick a scene: **Club gig under LED lights**, **Basketball under fluorescent lights**, **Portrait in deep shade, sunlit meadow**, **Dog running in the park**, **Group portrait in the shade** or **Birthday dinner indoors**. Each one starts with camera settings a photographer would recognise as wrong, and several need a setting most people never touch. The deep-shade portrait needs HDR Mode, which the control API can't switch on: the agent shows you the way through the camera's menus, and tapping **Done** sets it on the simulated body.
 3. In the phone on the left, tap an example goal or type your own. Watch the step log: what the agent looks at, every settings change as a diff (`Shutter 1/60 s → 1/1000 s`), each test shot, and the final summary with a before/after slider. The camera's rear screen updates live as the agent changes settings.
 4. While it works, or after it's done, type a correction: *"a bit warmer"*, *"keep more of the sky"*. Ask for ideas (*"suggest a few other poses for her"*) and the agent shows pictures of the scene re-imagined in each pose, on the phone and the lens. Say *"save this as club night"* to keep the settings as a preset, and *"use my club night preset"* later (**Presets** on the phone lists them).
@@ -45,6 +47,8 @@ The website's front page explains how the pieces fit together, with an animated 
 | `look` | One live-view frame, downscaled, plus brightness numbers; optionally magnified 5× or 10× around the AF point to check focus |
 | `set_settings` | Several changes at once, validated against the camera's ability lists. An invalid value returns a precise error listing the valid options. Allow-listed to exposure, white balance (and WB shift), metering, AF and tracking, drive, flash, shutter type, aspect ratio, picture style and its contrast, saturation, sharpness and colour tone; never storage, formats, network or power |
 | `focus` | Puts the AF point on a spot in the frame (switching tracking AF to 1-point), for when autofocus picks the wrong thing |
+| `detect_flicker` | Runs the camera's flicker detection: mains flicker, or high-frequency LED flicker, where it also picks a shutter speed that spans whole LED periods |
+| `menu_steps` | For a setting the control API can't reach: shows the camera's real menu screens down to the value to choose, and waits until the photographer has set it. The screens come from a menu map in the worker, never from the model |
 | `shoot` | Shutter (with or without AF), waits for the new file in event polling, downloads a display-size copy, and returns the photo, the exposure the camera actually used, and brightness numbers |
 | `save_preset`, `apply_preset` | Saves the camera's current settings under a name, on the phone (with any menu settings set by hand, such as HDR Mode); applies one later. The agent sees each saved preset in one line |
 | `show_ideas` | Two to four ideas for the shot (poses, arrangements, angles) with what to tell the people, each pictured by the image model: the live view re-imagined with the same people and place, or a picture from the prompt alone for general inspiration |
@@ -81,6 +85,12 @@ The client works the same way in TypeScript ([`ccapi/client.ts`](ccapi/client.ts
 - **The rest of the body:** flash with distance fall-off and sync speed, exposure and white-balance bracketing, continuous drive and self-timers, the AF point and zone AF, manual focus steps, magnified live view with histogram and AF frames, aspect ratios, RAW files, an electronic shutter that skews fast motion, movie recording (Motion-JPEG), and a card you can browse, protect, delete from and format. Event polling reports every change.
 
 The same simulator runs in a Web Worker for the browser demo, and as a plain HTTP server for testing the Android app without a camera: `npm run sim`, then point the app at `http://<your PC>:8080`. Open that address in a browser to see the camera's screen and switch scenes.
+
+## Technical decisions
+
+**The glasses app is a web app.** Ray-Ban Display can install a website as an app, so the HUD is plain web code rather than a native build. That made it quick to test: the lens is a 600×600 page, so it runs in any browser with the same code that runs on the glasses, and the simulated lens in the demo is that same app. It also makes it easy to share: anyone with Developer Mode can add the deployed site to their glasses, with no build or store release.
+
+**The simulator exists so judges can test it without a Canon camera.** Using the real thing takes a Canon body with CCAPI activated, which few people have to hand. The simulated camera answers the same API, so the same client, tools and agent loop run against it unchanged, and anyone can try the whole experience from a browser. The real-camera path is the same code pointed at the camera's address.
 
 ## Setup
 
