@@ -16,6 +16,7 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.doubleOrNull
@@ -319,7 +320,7 @@ class CameraTools(val client: CcapiClient, private val images: ImageTools) {
     suspend fun focusAt(x: Double, y: Double): Pair<List<String>, String> {
         val fx = x.coerceIn(0.0, 1.0)
         val fy = y.coerceIn(0.0, 1.0)
-        val (w, h) = client.liveDetail("info").info?.sensorSize
+        val (w, h) = client.liveDetail("info").info?.sensorSize?.takeIf { (w, h) -> w > 0 && h > 0 }
             ?: throw IllegalStateException("the camera doesn't report its image size, so the AF point can't be placed.")
         val applied = mutableListOf<String>()
         val method = settings["afmethod"]?.text.orEmpty()
@@ -372,9 +373,8 @@ class CameraTools(val client: CcapiClient, private val images: ImageTools) {
                     errors.add("$key = ${changes[key]} is not accepted.")
                     null
                 } ?: continue
-                value = if (key == "colortemperature") {
-                    (raw.doubleOrNull ?: raw.contentOrNull?.toDoubleOrNull() ?: Double.NaN).let { if (it.isNaN()) raw.content else it.roundToInt() }
-                } else raw.content.trim()
+                // A colour temperature that isn't a number stays text, which validation rejects.
+                value = if (key == "colortemperature") raw.doubleOrNull?.takeIf { it.isFinite() }?.roundToInt() ?: raw.content else raw.content.trim()
             }
             val before: Any? = item?.let { if (key == "wbshift") it.fields.mapValues { (_, n) -> (n as? Number)?.toInt() } else primitiveValue(it.value) }
             if (sameValue(before, value)) continue
@@ -396,7 +396,12 @@ class CameraTools(val client: CcapiClient, private val images: ImageTools) {
     /** Fine-tunes the current picture style (contrast, saturation, sharpness, colour tone). */
     private suspend fun setStyleDetail(detail: JsonObject, applied: MutableList<String>, errors: MutableList<String>) {
         val style = settings["picturestyle"]?.text.orEmpty()
-        val changes = STYLE_DETAIL_FIELDS.mapNotNull { f -> (detail[f] as? JsonPrimitive)?.doubleOrNull?.let { f to it.roundToInt() } }.toMap()
+        // Numbers and non-empty strings; one that isn't a number is NaN, which validation rejects.
+        val changes = STYLE_DETAIL_FIELDS.mapNotNull { f ->
+            val p = detail[f] as? JsonPrimitive ?: return@mapNotNull null
+            if (p is JsonNull || (if (p.isString) p.content.isEmpty() else p.booleanOrNull != null)) return@mapNotNull null
+            f to (p.doubleOrNull?.takeIf { it.isFinite() }?.roundToInt() ?: Double.NaN)
+        }.toMap()
         if (style.isEmpty() || changes.isEmpty()) return
         try {
             val before = client.pictureStyleDetail(style).fields

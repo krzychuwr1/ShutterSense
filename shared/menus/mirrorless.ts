@@ -280,7 +280,7 @@ export const MIRRORLESS: CameraMenuMap = {
               does: "In-body stabiliser on or off (greyed out with lenses that have an IS switch: use the switch).",
               aka: ["Image stabilizer", "Image stabiliser", "IBIS", "Stabilization"],
             },
-            // Movie digital IS: listed here but only used for movies (p. 426).
+            // Movie digital IS: listed here but only used for movies.
             { name: "Digital IS", value: "Off", dim: true },
             {
               name: "Still photo IS",

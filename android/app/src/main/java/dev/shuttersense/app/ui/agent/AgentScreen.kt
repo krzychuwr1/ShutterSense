@@ -23,7 +23,9 @@ import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.IntrinsicSize
@@ -45,11 +47,13 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowForward
 import androidx.compose.material.icons.rounded.Add
@@ -64,10 +68,8 @@ import androidx.compose.material.icons.rounded.PhotoCamera
 import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -87,7 +89,7 @@ import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -116,6 +118,7 @@ import dev.shuttersense.app.ui.components.PrimaryButton
 import dev.shuttersense.app.ui.components.RoundIcon
 import dev.shuttersense.app.ui.components.SecondaryButton
 import dev.shuttersense.app.ui.components.SettingChip
+import dev.shuttersense.app.ui.components.Sheet
 import dev.shuttersense.app.ui.components.StatusDot
 import dev.shuttersense.app.ui.components.TextAction
 import dev.shuttersense.app.ui.components.rememberDataUrlImage
@@ -197,33 +200,36 @@ private fun StatusLine(vm: AppViewModel, sceneChip: Boolean) {
 
 @Composable
 private fun EmptyState(vm: AppViewModel) {
-    Column(
-        Modifier.fillMaxSize().padding(horizontal = 24.dp),
-        verticalArrangement = Arrangement.Bottom,
-    ) {
-        Text("What's the shot?", style = MaterialTheme.typography.displaySmall, color = Palette.Text)
-        Spacer(Modifier.height(10.dp))
-        Text(
-            "Describe it the way you'd brief an assistant. It reads the camera, changes the settings and takes test shots.",
-            style = MaterialTheme.typography.bodyLarge,
-            color = Palette.Muted,
-        )
-        Spacer(Modifier.height(28.dp))
-        Eyebrow("Try")
-        Spacer(Modifier.height(10.dp))
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            vm.exampleGoals.forEach { g ->
-                Row(
-                    Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(Palette.Surface)
-                        .clickable { vm.goal = g; vm.submit() }.padding(horizontal = 18.dp, vertical = 15.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(g, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium, color = Palette.Text)
-                    Icon(Icons.AutoMirrored.Rounded.ArrowForward, null, Modifier.size(18.dp), tint = Palette.Faint)
+    // Sits at the bottom; scrolls when it doesn't fit (a phone on its side).
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        Column(
+            Modifier.verticalScroll(rememberScrollState()).heightIn(min = maxHeight).fillMaxWidth().padding(horizontal = 24.dp),
+            verticalArrangement = Arrangement.Bottom,
+        ) {
+            Text("What's the shot?", style = MaterialTheme.typography.displaySmall, color = Palette.Text)
+            Spacer(Modifier.height(10.dp))
+            Text(
+                "Describe it the way you'd brief an assistant. It reads the camera, changes the settings and takes test shots.",
+                style = MaterialTheme.typography.bodyLarge,
+                color = Palette.Muted,
+            )
+            Spacer(Modifier.height(28.dp))
+            Eyebrow("Try")
+            Spacer(Modifier.height(10.dp))
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                vm.exampleGoals.forEach { g ->
+                    Row(
+                        Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(Palette.Surface)
+                            .clickable { vm.goal = g; vm.submit() }.padding(horizontal = 18.dp, vertical = 15.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(g, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium, color = Palette.Text)
+                        Icon(Icons.AutoMirrored.Rounded.ArrowForward, null, Modifier.size(18.dp), tint = Palette.Faint)
+                    }
                 }
             }
+            Spacer(Modifier.height(20.dp))
         }
-        Spacer(Modifier.height(20.dp))
     }
 }
 
@@ -374,22 +380,7 @@ private fun isLive(s: StepEntry, vm: AppViewModel) =
  */
 @Composable
 private fun GuideCard(s: StepEntry, live: Boolean, vm: AppViewModel) {
-    Column(
-        Modifier.fillMaxWidth().widthIn(max = 460.dp).clip(RoundedCornerShape(22.dp)).background(Palette.Raised).padding(20.dp),
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(Modifier.size(28.dp).clip(CircleShape).background(Palette.AccentSoft), contentAlignment = Alignment.Center) {
-                Icon(Icons.Rounded.PhotoCamera, null, Modifier.size(15.dp), tint = Palette.Accent)
-            }
-            Spacer(Modifier.width(10.dp))
-            Eyebrow("On the camera", color = Palette.Accent)
-        }
-        Spacer(Modifier.height(14.dp))
-        Text(s.title.orEmpty(), style = MaterialTheme.typography.headlineSmall, color = Palette.Text)
-        if (s.text.isNotEmpty()) {
-            Spacer(Modifier.height(6.dp))
-            Text(s.text, style = MaterialTheme.typography.bodyMedium, color = Palette.Muted)
-        }
+    StepCard(Icons.Rounded.PhotoCamera, "On the camera", s) {
         Spacer(Modifier.height(18.dp))
         // Camera-style menu screens when the agent gave them; the text steps otherwise.
         if (s.menu.isNotEmpty()) CameraMenuGuide(s.menu, Modifier.fillMaxWidth())
@@ -433,15 +424,28 @@ private fun GuideCard(s: StepEntry, live: Boolean, vm: AppViewModel) {
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun PresetCard(s: StepEntry) {
+    StepCard(Icons.Rounded.Bookmark, "Saved preset", s) {
+        if (s.detail.isNotEmpty()) {
+            Spacer(Modifier.height(14.dp))
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                s.detail.forEach { SettingChip(it, container = Palette.Raised2) }
+            }
+        }
+    }
+}
+
+/** A card in the timeline: an icon and a label, the step's title and text, then [content]. */
+@Composable
+private fun StepCard(icon: ImageVector, label: String, s: StepEntry, content: @Composable ColumnScope.() -> Unit) {
     Column(
         Modifier.fillMaxWidth().widthIn(max = 460.dp).clip(RoundedCornerShape(22.dp)).background(Palette.Raised).padding(20.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.size(28.dp).clip(CircleShape).background(Palette.AccentSoft), contentAlignment = Alignment.Center) {
-                Icon(Icons.Rounded.Bookmark, null, Modifier.size(15.dp), tint = Palette.Accent)
+                Icon(icon, null, Modifier.size(15.dp), tint = Palette.Accent)
             }
             Spacer(Modifier.width(10.dp))
-            Eyebrow("Saved preset", color = Palette.Accent)
+            Eyebrow(label, color = Palette.Accent)
         }
         Spacer(Modifier.height(14.dp))
         Text(s.title.orEmpty(), style = MaterialTheme.typography.headlineSmall, color = Palette.Text)
@@ -449,12 +453,7 @@ private fun PresetCard(s: StepEntry) {
             Spacer(Modifier.height(6.dp))
             Text(s.text, style = MaterialTheme.typography.bodyMedium, color = Palette.Muted)
         }
-        if (s.detail.isNotEmpty()) {
-            Spacer(Modifier.height(14.dp))
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                s.detail.forEach { SettingChip(it, container = Palette.Raised2) }
-            }
-        }
+        content()
     }
 }
 
@@ -540,15 +539,16 @@ private fun ApprovalCard(a: ShotApproval, vm: AppViewModel) {
 @Composable
 private fun Compare(first: ShotThumb, last: ShotThumb) {
     var split by remember { mutableFloatStateOf(0.5f) }
-    val before = remember(first) { first.bitmap.asImageBitmap() }
-    val after = remember(last) { last.bitmap.asImageBitmap() }
+    val before = rememberDataUrlImage(first.image)
+    val after = rememberDataUrlImage(last.image)
     Column(Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 8.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Eyebrow("Before and after")
         Box(
             Modifier
                 .fillMaxWidth()
-                .aspectRatio(after.width.toFloat() / after.height)
+                .aspectRatio(after?.let { it.width.toFloat() / it.height } ?: 1.5f)
                 .clip(RoundedCornerShape(18.dp))
+                .background(Palette.Surface)
                 .pointerInput(Unit) {
                     detectTapGestures { split = (it.x / size.width).coerceIn(0f, 1f) }
                 }
@@ -556,8 +556,8 @@ private fun Compare(first: ShotThumb, last: ShotThumb) {
                     detectHorizontalDragGestures { change, _ -> split = (change.position.x / size.width).coerceIn(0f, 1f) }
                 },
         ) {
-            Image(after, "After", Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
-            Image(
+            if (after != null) Image(after, "After", Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+            if (before != null) Image(
                 before, "Before",
                 Modifier.fillMaxSize().drawWithContent { clipRect(right = size.width * split) { this@drawWithContent.drawContent() } },
                 contentScale = ContentScale.Crop,
@@ -589,7 +589,8 @@ private fun Compare(first: ShotThumb, last: ShotThumb) {
             Tag("After", Modifier.align(Alignment.TopEnd))
         }
         Row(Modifier.fillMaxWidth()) {
-            Text("Shot ${first.n} · ${first.exposure}", Modifier.weight(1f), style = MaterialTheme.typography.labelMedium.merge(Numeric), color = Palette.Muted)
+            // The live view before any change has no shot number.
+            Text(if (first.n > 0) "Shot ${first.n} · ${first.exposure}" else first.exposure, Modifier.weight(1f), style = MaterialTheme.typography.labelMedium.merge(Numeric), color = Palette.Muted)
             Spacer(Modifier.width(12.dp))
             Text("Shot ${last.n} · ${last.exposure}", Modifier.weight(1f), style = MaterialTheme.typography.labelMedium.merge(Numeric), color = Palette.Text, textAlign = androidx.compose.ui.text.style.TextAlign.End)
         }
@@ -713,11 +714,13 @@ private fun Listening() {
 
 // ------------------------------------------------------------------ run settings
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun RunSettingsSheet(vm: AppViewModel, onDismiss: () -> Unit) {
-    ModalBottomSheet(onDismiss, containerColor = Palette.Surface, contentColor = Palette.Text, scrimColor = Color(0x99000000)) {
-        Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp).padding(bottom = 28.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+    Sheet(onDismiss) {
+        Column(
+            Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp).padding(bottom = 28.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
             Text("Run settings", style = MaterialTheme.typography.titleLarge, color = Palette.Text)
             Spacer(Modifier.height(12.dp))
             Row(

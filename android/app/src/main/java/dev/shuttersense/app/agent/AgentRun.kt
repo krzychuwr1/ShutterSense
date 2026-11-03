@@ -141,21 +141,8 @@ class AgentRun(
 
     /** Starts a new goal. A run still going (say, cancelled but finishing a camera call) is stopped first. */
     fun start(goal: String) {
-        // Not isActive: a cancelled run is no longer active but may still be finishing.
-        val previous = job?.takeIf { !it.isCompleted }
-        if (previous == null) {
-            begin(goal)
-            launchLoop()
-            return
-        }
-        previous.cancel()
-        job = scope.launch {
-            // Waits out the old run even if this start is replaced meanwhile, so the next one waits for it too.
-            withContext(NonCancellable) { previous.join() }
-            ensureActive()
-            begin(goal)
-            loop()
-        }
+        job?.cancel()
+        launchLoop { begin(goal) }
     }
 
     private fun begin(goal: String) {
@@ -193,8 +180,26 @@ class AgentRun(
         (opts.presets?.list() ?: emptyList()).map(::presetSummary),
     )
 
-    private fun launchLoop() {
-        job = scope.launch { loop() }
+    /**
+     * Runs [before] and the loop once the previous run has ended: a cancelled
+     * run is no longer busy but may still be finishing a camera call, and two
+     * loops mustn't share the transcript.
+     */
+    private fun launchLoop(before: () -> Unit = {}) {
+        // Not isActive: a cancelled job is no longer active while it finishes.
+        val previous = job?.takeIf { !it.isCompleted }
+        if (previous == null) {
+            before()
+            job = scope.launch { loop() }
+            return
+        }
+        job = scope.launch {
+            // Waits out the old run even if this one is replaced meanwhile, so the next one waits for it too.
+            withContext(NonCancellable) { previous.join() }
+            ensureActive()
+            before()
+            loop()
+        }
     }
 
     private suspend fun loop() {
@@ -349,7 +354,8 @@ class AgentRun(
                         if (!ui.confirmShot(n, reason)) return out("ERROR: the photographer declined this shot.")
                     }
                     ui.status("Shooting $n/$maxShots…")
-                    val af = (args["af"] as? JsonPrimitive)?.booleanOrNull != false
+                    // Only a JSON false turns AF off (booleanOrNull also reads the string "false").
+                    val af = (args["af"] as? JsonPrimitive)?.takeIf { !it.isString }?.booleanOrNull != false
                     // Counted before the press: a shot whose download fails was still taken.
                     shots = n
                     val result = camera.shoot(af, n)
@@ -366,9 +372,7 @@ class AgentRun(
                 }
                 "menu_steps" -> {
                     val setting = text("setting", 60)
-                    val steps = (args["steps"] as? JsonArray)
-                        ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull?.replace(Regex("\\s+"), " ")?.trim()?.take(80) }
-                        ?.filter { it.isNotEmpty() }?.take(8) ?: emptyList()
+                    val steps = (args["steps"] as? JsonArray)?.map { clip(it, 80) }?.filter { it.isNotEmpty() }?.take(8) ?: emptyList()
                     if (setting.isEmpty() || steps.isEmpty()) return out("ERROR: give the setting and the steps.")
                     ui.step(StepEntry(StepKind.GUIDE, text("why", 160), detail = steps, title = setting, menu = cleanMenu(args["screens"])))
                     ui.status("Waiting for you to change it on the camera…")
@@ -463,9 +467,7 @@ class AgentRun(
                 }
                 "ask_user" -> {
                     val q = text("question", 160)
-                    val options = (args["options"] as? JsonArray)
-                        ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull?.replace(Regex("\\s+"), " ")?.trim()?.take(40) }
-                        ?.filter { it.isNotEmpty() }?.take(4) ?: emptyList()
+                    val options = (args["options"] as? JsonArray)?.map { clip(it, 40) }?.filter { it.isNotEmpty() }?.take(4) ?: emptyList()
                     if (q.isEmpty()) return out("ERROR: question is empty.")
                     ui.step(StepEntry(StepKind.ASK, q, detail = options))
                     ui.status("Waiting for your answer…")

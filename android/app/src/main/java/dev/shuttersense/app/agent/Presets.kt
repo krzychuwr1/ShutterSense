@@ -70,7 +70,7 @@ private val SPACES = Regex("\\s+")
 fun presetKey(name: String): String = name.lowercase().replace(SPACES, " ").trim()
 
 /** A string squeezed to single spaces, trimmed and cut to [max]; "" for anything that isn't a string. */
-private fun cleanText(v: JsonElement?, max: Int): String {
+internal fun cleanText(v: JsonElement?, max: Int): String {
     val p = v as? JsonPrimitive ?: return ""
     if (!p.isString) return ""
     return p.content.replace(SPACES, " ").trim().take(max)

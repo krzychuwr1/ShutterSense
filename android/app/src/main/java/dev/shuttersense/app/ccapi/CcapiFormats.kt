@@ -41,11 +41,13 @@ private fun InputStream.buffered(): InputStream = if (markSupported()) this else
 /**
  * Reads framed records one at a time. The size's byte order isn't known:
  * big-endian is tried first, little-endian when that
- * doesn't land on the end marker.
+ * doesn't land on the end marker. After that the order that worked is tried
+ * first, so a stream doesn't wait for bytes a misread size asks for.
  */
 class RecordReader(input: InputStream) {
     private val input = input.buffered()
     private var offset = 0L
+    private var littleEndian = false
 
     /** The next record, or null at the end of the stream. */
     fun next(): FramedRecord? {
@@ -53,9 +55,9 @@ class RecordReader(input: InputStream) {
         if (input.readUpTo(head) < 7) return null
         if (head[0] != 0xFF.toByte() || head[1] != 0x00.toByte()) throw IOException("Bad live view record at byte $offset")
         val type = head[2].toInt() and 0xFF
-        val be = u32(head, 3, bigEndian = true)
-        val le = u32(head, 3, bigEndian = false)
-        val data = attempt(be) ?: (if (le != be) attempt(le) else null)
+        val first = u32(head, 3, bigEndian = !littleEndian)
+        val second = u32(head, 3, bigEndian = littleEndian)
+        val data = attempt(first) ?: (if (second != first) attempt(second)?.also { littleEndian = !littleEndian } else null)
             ?: throw IOException("Bad live view record size at byte $offset")
         offset += data.size + 9
         return FramedRecord(type, data)

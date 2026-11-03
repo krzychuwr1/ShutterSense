@@ -74,7 +74,7 @@ export function windowGain(l: Flicker, a: number, t: number): RGB {
 }
 
 /** When the light is brightest, in its own timeline (seconds within the first period). */
-export function peakTime(l: Flicker): number {
+function peakTime(l: Flicker): number {
   return l.kind === "mains" ? 0 : ((l.duty ?? 0.5) / l.hz) / 2;
 }
 

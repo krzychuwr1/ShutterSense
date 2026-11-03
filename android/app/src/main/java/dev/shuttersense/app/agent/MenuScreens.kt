@@ -81,12 +81,7 @@ private const val MAX_VALUE = 24
 /** A screen list (from the worker, or relayed to the glasses) made safe to draw: known tabs, bounded text, the selection among the rows. */
 fun cleanMenu(raw: JsonElement?): List<MenuScreen> {
     val list = raw as? JsonArray ?: return emptyList()
-    fun clip(v: JsonElement?, max: Int): String {
-        val p = v as? JsonPrimitive ?: return ""
-        if (!p.isString) return ""
-        return p.content.replace(Regex("\\s+"), " ").trim().take(max)
-    }
-    fun text(v: JsonElement?) = clip(v, MAX_TEXT)
+    fun text(v: JsonElement?) = cleanText(v, MAX_TEXT)
     fun count(v: JsonElement?): Int? = (v as? JsonPrimitive)?.contentOrNull?.toDoubleOrNull()
         ?.takeIf { it % 1.0 == 0.0 && it > 0 && it < 20 }?.toInt()
     val out = mutableListOf<MenuScreen>()
@@ -100,7 +95,7 @@ fun cleanMenu(raw: JsonElement?): List<MenuScreen> {
             val t = text(it)
             if (t.isEmpty()) return@forEachIndexed
             items.add(t)
-            values.add(clip(rawValues?.getOrNull(i), MAX_VALUE))
+            values.add(cleanText(rawValues?.getOrNull(i), MAX_VALUE))
         }
         val select = text(o["select"])
         if (tab == null || select.isEmpty()) continue

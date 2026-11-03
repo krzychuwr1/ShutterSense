@@ -136,8 +136,7 @@ class GlassesRoom(
     private var retry = 0
     private var closed = false
     private var ping: Job? = null
-    var glasses = 0
-        private set
+    private var glasses = 0
 
     fun start() {
         closed = false

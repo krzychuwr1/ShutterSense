@@ -24,10 +24,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -47,6 +45,7 @@ import androidx.compose.ui.unit.dp
 import dev.shuttersense.app.ui.AppViewModel
 import dev.shuttersense.app.ui.Palette
 import dev.shuttersense.app.ui.components.Eyebrow
+import dev.shuttersense.app.ui.components.Sheet
 
 // Demo mode's scene switcher: a compact chip (thumbnail and title) that opens
 // a sheet of the simulator's scenes.
@@ -91,10 +90,9 @@ private fun Thumb(image: ImageBitmap?, size: Dp, corner: Dp = size / 2) {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SceneSheet(vm: AppViewModel, onDismiss: () -> Unit) {
-    ModalBottomSheet(onDismiss, containerColor = Palette.Surface, contentColor = Palette.Text, scrimColor = Color(0x99000000)) {
+    Sheet(onDismiss) {
         Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp).padding(bottom = 28.dp)) {
             Eyebrow("Demo camera")
             Spacer(Modifier.height(6.dp))

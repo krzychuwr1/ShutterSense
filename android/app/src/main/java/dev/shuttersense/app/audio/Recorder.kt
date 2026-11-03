@@ -44,11 +44,16 @@ class Recorder {
             r.startRecording()
             while (!stopping && isActive && pcm.size() < limit) {
                 val n = r.read(buf, 0, buf.size)
-                if (n > 0) pcm.write(buf, 0, n)
+                // An error (the microphone was taken away, say) ends the recording rather than spinning.
+                if (n < 0) break
+                pcm.write(buf, 0, n)
             }
         } finally {
-            r.stop()
-            r.release()
+            try {
+                r.stop()
+            } finally {
+                r.release()
+            }
         }
         val data = pcm.toByteArray()
         if (data.size < RATE * 2 * 3 / 10) null else wav(data, RATE)

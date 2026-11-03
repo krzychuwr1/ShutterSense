@@ -23,6 +23,7 @@
 import { avNumber, evStops, ISO_SCALE, isoNumber, nearest, TV_SCALE, tvSeconds, AV_SCALE } from "../shared/settings.ts";
 import { afArea, autofocus, type AfResult } from "./autofocus.ts";
 import { Card, httpDate, type ContentEvent } from "./card.ts";
+import { luma } from "./color.ts";
 import { CameraFunctions } from "./functions.ts";
 import { concat, jsonRecord, multipart, MULTIPART_TYPE, quicktimeMjpeg, record, RECORD_EVENT, RECORD_INFO, RECORD_JPEG, simRaw, type MovieFrame } from "./formats.ts";
 import { isMains, matchingTime, peakStart, windowGain, type Flicker } from "./flicker.ts";
@@ -312,10 +313,6 @@ export class VirtualCamera {
     this.reported.clear();
   }
 
-  sceneId() {
-    return this.scene.id;
-  }
-
   status(): SimStatus {
     return {
       scene: this.scene.id,
@@ -405,7 +402,8 @@ export class VirtualCamera {
     const ev = meter(this.scene, String(this.eff("metering")), time);
     const autoIso = this.eff("iso") === "auto" || mode === "movie" || mode === "a+";
     const fixedM = mode === "m" && !autoIso;
-    const comp = fixedM || mode === "movie" ? 0 : evStops(String(this.eff("exposure"))) ?? 0;
+    // No compensation in M with a fixed ISO or in bulb (the setting is emptied there), nor in movie auto.
+    const comp = fixedM || mode === "bulb" || mode === "movie" ? 0 : evStops(String(this.eff("exposure"))) ?? 0;
     const bias = o.bias ?? 0;
     const target = ev - comp - (fixedM ? 0 : bias); // EV at ISO 100 the camera aims for
     const minT = 1 / 8000;
@@ -436,7 +434,7 @@ export class VirtualCamera {
       case "movie":
         // Movie auto: a 180° shutter at 30p, program aperture, then ISO.
         t = 1 / 60;
-        N = Math.min(Math.max(lens.maxAperture, Math.sqrt((t * 100 * 2 ** target) / 100)), lens.minAperture);
+        N = Math.min(Math.max(lens.maxAperture, Math.sqrt(t * 2 ** target)), lens.minAperture);
         iso = isoFor(N, t);
         break;
       case "tv": {
@@ -521,7 +519,7 @@ export class VirtualCamera {
       const g = windowGain(mains, peakStart(mains, travel, t) + travel / 2, t);
       const subject = this.subjectLayer();
       const share = subject?.flicker?.light === mains ? subject.flicker.share : 1;
-      gain = 1 / (1 - share + share * (0.2126 * g[0] + 0.7152 * g[1] + 0.0722 * g[2]));
+      gain = 1 / (1 - share + share * luma(g));
     }
     return { travel, start: (l) => phase.get(l) ?? 0, gain };
   }
@@ -580,10 +578,10 @@ export class VirtualCamera {
 
   // ---------------------------------------------------------------- images
 
-  /** The recorded area of the sensor for the aspect ratio (sensor pixels). */
+  /** The recorded area of the sensor for the aspect ratio (sensor pixels); 16:9 in movie mode. */
   private aspectRect(): Rect {
     const { w, h } = this.scene;
-    const ratio = String(this.settings.stillimageaspectratio);
+    const ratio = this.movie ? "16:9" : String(this.settings.stillimageaspectratio);
     const centred = (cw: number, ch: number): Rect => ({ x: Math.round((w - cw) / 2), y: Math.round((h - ch) / 2), w: Math.round(cw), h: Math.round(ch) });
     switch (ratio) {
       case "4:3": return centred((h * 4) / 3, h);
@@ -715,7 +713,8 @@ export class VirtualCamera {
 
   /** The frames one press produces: bursts, self-timer, exposure / WB / focus brackets. */
   private plan(t0: number, burst: number): Frame[] {
-    const aeb = evStops(String(this.eff("aeb"))) ?? 0;
+    // AEB is emptied in bulb (the shutter time is how long the button is held).
+    const aeb = this.mode() === "bulb" ? 0 : evStops(String(this.eff("aeb"))) ?? 0;
     const biases = aeb ? [0, -aeb, aeb] : [0];
     const wbb = String(this.eff("wbbracket")).match(/^(ba|mg)(\d)$/);
     const shift = this.eff("wbshift") as { ba: number; mg: number };
@@ -775,7 +774,9 @@ export class VirtualCamera {
       return ok();
     }
     const burst = continuous ? QUICK_BURST : drive === "self_continuous" ? 2 : 1;
-    this.capture(this.plan(time, burst), this.timer());
+    // With the self-timer the frames are exposed (and moving subjects caught) when it runs out.
+    const delay = this.timer();
+    this.capture(this.plan(time + delay / 1000, burst), delay);
     return ok();
   }
 
@@ -921,13 +922,13 @@ export class VirtualCamera {
     const time = this.clock();
     const rec: Recording = { frames: [], stop: false, done: Promise.resolve(), w: 0, h: 0, exposure: this.solve(time, { movie: true }), time };
     rec.done = (async () => {
-      // Frames at preview size, one at a time and each with its real duration.
+      // Frames at preview size (the live view is 16:9 in movie mode), one at a
+      // time and each with its real duration.
       do {
         const t0 = Date.now();
         let img = this.renderLive(600);
-        img = crop(img, { x: 0, y: (img.h - (img.w * 9) / 16) / 2, w: img.w, h: (img.w * 9) / 16 });
         if (this.settings.moviecropping === "enable") {
-          const c = crop(img, { x: (img.w * 0.1875), y: img.h * 0.1875, w: img.w / 1.6, h: img.h / 1.6 });
+          const c = crop(img, { x: img.w * 0.1875, y: img.h * 0.1875, w: img.w / 1.6, h: img.h / 1.6 });
           img = resize(c, img.w, img.h);
         }
         rec.w = img.w;
@@ -1108,11 +1109,14 @@ export class VirtualCamera {
     let out = this.takeEvents(v100);
     while (!Object.keys(out).length && Date.now() < deadline && seq === this.stopSeq) {
       await new Promise<void>((resolve) => {
-        const timer = setTimeout(resolve, Math.max(0, deadline - Date.now()));
-        this.waiters.push(() => {
+        // Woken early or timed out, either way it leaves the waiting list.
+        const done = () => {
           clearTimeout(timer);
+          this.waiters = this.waiters.filter((w) => w !== done);
           resolve();
-        });
+        };
+        const timer = setTimeout(done, Math.max(0, deadline - Date.now()));
+        this.waiters.push(done);
       });
       out = this.takeEvents(v100);
     }
@@ -1457,19 +1461,17 @@ export class VirtualCamera {
   private sampleLight(x: number, y: number): RGB {
     const f = 4;
     const { rgb, w, h } = composite(this.scene, { w: this.scene.w / f, dofN: this.scene.lens.maxAperture, focus: this.focus, time: this.clock(), motionBlur: false, t: 0 });
-    let r = 0, g = 0, b = 0;
+    const sum: RGB = [0, 0, 0];
     for (let dy = -2; dy <= 2; dy++) {
       for (let dx = -2; dx <= 2; dx++) {
         const sx = Math.min(w - 1, Math.max(0, Math.floor(x / f) + dx));
         const sy = Math.min(h - 1, Math.max(0, Math.floor(y / f) + dy));
         const i = (sy * w + sx) * 3;
-        r += rgb[i];
-        g += rgb[i + 1];
-        b += rgb[i + 2];
+        for (let c = 0; c < 3; c++) sum[c] += rgb[i + c];
       }
     }
-    const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b || 1;
-    return [Math.max(1e-3, r / lum), Math.max(1e-3, g / lum), Math.max(1e-3, b / lum)];
+    const lum = luma(sum) || 1;
+    return sum.map((v) => Math.max(1e-3, v / lum)) as RGB;
   }
 }
 

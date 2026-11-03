@@ -364,7 +364,7 @@ function addFlash(buf: Float32Array, sl: SceneLayer, w: number, h: number, facto
 
 interface Style { contrast: number; saturation: number; warmth: number; mono?: boolean }
 
-export const PICTURE_STYLES: Record<string, Style> = {
+const PICTURE_STYLES: Record<string, Style> = {
   auto: { contrast: 1.1, saturation: 1.15, warmth: 0 },
   standard: { contrast: 1.1, saturation: 1.12, warmth: 0 },
   portrait: { contrast: 1.0, saturation: 1.05, warmth: 0.03 },
@@ -686,8 +686,6 @@ function bloom(rgb: Float32Array, w: number, h: number) {
 }
 
 // ------------------------------------------------------------------ metering
-
-export type MeteringMode = "evaluative" | "partial" | "spot" | "center_weighted_average";
 
 /**
  * Metered brightness as EV at ISO 100: exposing at this EV renders the

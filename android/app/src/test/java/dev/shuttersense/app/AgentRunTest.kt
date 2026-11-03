@@ -351,6 +351,38 @@ class AgentRunTest {
     }
 
     @Test
+    fun aCorrectionAfterCancellingWaitsForTheRunToEnd() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        var first = true
+        val api = RecordingApi { n -> reply(call("finish", """{"summary":"run $n"}""")) }
+        val slow = object : AgentApi {
+            override suspend fun step(session: String, input: List<JsonObject>, context: AgentContext): AgentResponse {
+                if (first) {
+                    first = false
+                    // A call that finishes on its own time even when cancelled, then notices.
+                    withContext(NonCancellable) { gate.await() }
+                    currentCoroutineContext().ensureActive()
+                }
+                return api.step(session, input, context)
+            }
+        }
+        val ui = FakeUi()
+        val run = AgentRun(slow, camera, ui, RunOptions(3, false, { false }, "t"), this)
+        run.start("Freeze the dog")
+        advanceUntilIdle()
+        run.cancel()
+        // Not busy any more, but the cancelled run hasn't ended yet.
+        run.instruct("a bit warmer")
+        advanceUntilIdle()
+        val waiting = ui.ended.isEmpty() && api.requests.isEmpty()
+        gate.complete(Unit)
+        advanceUntilIdle()
+        assertTrue("the follow-up waits for the cancelled run", waiting)
+        assertEquals(listOf(Outcome.CANCELLED, Outcome.DONE), ui.ended)
+        assertTrue(api.requests.single().toString().contains("[Photographer] a bit warmer"))
+    }
+
+    @Test
     fun tooManyPhotographerMessagesKeepTheLatest() {
         val input = mutableListOf(user("Goal: x"))
         for (r in 0 until 121) input += listOf(user("[Photographer] m$r"), item("function_call", "a$r"), item("function_call_output", "a$r"))

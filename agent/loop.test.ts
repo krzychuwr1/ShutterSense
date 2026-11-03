@@ -143,6 +143,44 @@ test("a new goal waits for a cancelled run to finish its camera call, then start
   assert.doesNotMatch(JSON.stringify(requests.at(-1)!.input), /Goal: A/);
 });
 
+test("cancelling while a new goal waits for the old run cancels the new goal too", async () => {
+  let requests = 0;
+  let release!: () => void;
+  const slowCamera = { ...camera, getState: () => new Promise<string>((r) => (release = () => r("{}"))) } as unknown as CameraTools;
+  const api = { step: async () => (requests++, reply(call("get_camera_state"))) };
+  const { ui, ended } = fakeUi();
+  const run = new AgentRun(api, slowCamera, ui, { maxShots: 3, askBeforeShooting: false, glasses: () => false, session: "t" });
+  const first = run.start("A");
+  await new Promise((r) => setTimeout(r, 0));
+  const second = run.start("B");
+  run.cancel();
+  release();
+  await Promise.all([first, second]);
+  assert.deepEqual(ended, ["cancelled"]);
+  assert.equal(requests, 1);
+  assert.equal(run.busy, false);
+});
+
+test("a correction sent after cancelling runs once the cancelled run has ended", async () => {
+  const requests: AgentRequest[] = [];
+  let release!: () => void;
+  const slowCamera = { ...camera, getState: () => new Promise<string>((r) => (release = () => r("{}"))) } as unknown as CameraTools;
+  const replies = [reply(call("get_camera_state")), reply(call("finish", { summary: "warmer" }))];
+  const api = { step: async (req: AgentRequest) => (requests.push(structuredClone(req)), replies.shift()!) };
+  const { ui, ended } = fakeUi();
+  const run = new AgentRun(api, slowCamera, ui, { maxShots: 3, askBeforeShooting: false, glasses: () => false, session: "t" });
+  const first = run.start("A");
+  await new Promise((r) => setTimeout(r, 0));
+  run.cancel();
+  const correction = run.instruct("a bit warmer");
+  release();
+  await Promise.all([first, correction]);
+  assert.deepEqual(ended, ["cancelled", "done"]);
+  assert.equal(requests.length, 2);
+  assert.match(JSON.stringify(requests[1].input), /\[Photographer\] a bit warmer/);
+  assert.equal(run.busy, false);
+});
+
 // ------------------------------------------------------------------ presets and ideas
 
 function memoryPresets() {

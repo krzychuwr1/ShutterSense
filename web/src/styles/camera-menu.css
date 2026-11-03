@@ -62,8 +62,6 @@
 }
 .cm-rows li, .cm-popup li { display: flex; align-items: center; min-width: 0; padding: 0 3cqw 0 5cqw; background: var(--cm-row); white-space: nowrap; }
 .cm-rows.sub li { padding-left: 4cqw; }
-.cm-rows li.empty { background: var(--cm-row); }
-.cm-rows.sub li.empty { background: transparent; }
 .cm-label { flex: 0 1 auto; min-width: 54%; overflow: hidden; text-overflow: ellipsis; padding-right: 2cqw; }
 .cm-val { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--cm-text); }
 .cm-val.r { text-align: right; }

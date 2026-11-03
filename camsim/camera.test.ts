@@ -140,7 +140,7 @@ test("flash lights a dark foreground and falls off with distance", async () => {
   assert.equal((await put(c, "flash", "on")).status, 200);
   const [lit] = await shoot(c);
   assert.ok(lit.flash && !plain.flash);
-  const near: [number, number, number, number] = [0.3, 0.8, 0.7, 0.98]; // the table, 1.6 m away
+  const near: [number, number, number, number] = [0.3, 0.8, 0.7, 0.98]; // the table, under 1.5 m away
   const a = meanLum(await fileBytes(c, plain.path), near);
   const b = meanLum(await fileBytes(c, lit.path), near);
   assert.ok(b > a + 25, `table ${a.toFixed(1)} -> ${b.toFixed(1)} with flash`);
@@ -387,7 +387,11 @@ test("live view magnification zooms around the AF point", async () => {
 test("movie mode records a Motion-JPEG .MOV and blocks still settings", async () => {
   const c = await cam("group");
   assert.equal((await post(c, "ver100/shooting/control/recbutton", { action: "start" })).status, 503);
+  await put(c, "stillimageaspectratio", "1:1");
   assert.equal((await post(c, "ver100/shooting/control/moviemode", { action: "on" })).status, 200);
+  // Movies are 16:9 whatever the stills aspect ratio.
+  const lv = decode(await c.frame(600));
+  assert.deepEqual([lv.width, lv.height], [600, 338]);
   assert.equal((await get(c, "/ccapi/ver100/shooting/settings/av")).status, 503);
   assert.equal((await get(c, "/ccapi/ver100/shooting/settings/moviequality")).status, 200);
   assert.equal((await post(c, "ver100/shooting/control/recbutton", { action: "start" })).status, 200);
@@ -555,6 +559,8 @@ test("LED stage lights band the electronic shutter until the HF anti-flicker spe
   // Fine steps move off the matching speed, and the bands come back.
   assert.equal((await post(c, "ver110/shooting/control/hfflickertv", { value: "increment_large" })).status, 200);
   assert.notEqual(c.status().settings.hfflickertv, det.tv);
+  const off = await pair();
+  assert.ok(off.d > clean.d * 2, `bands again at ${off.tv}, diff ${off.d.toFixed(3)} vs ${clean.d.toFixed(3)}`);
 });
 
 test("flicker detection reports what lights each scene", async () => {

@@ -53,6 +53,8 @@ class SessionService : Service() {
         fun hide(context: Context) {
             wanted = false
             if (!running) return
+            // Cleared now, not in onDestroy: a show() before then starts a new service instead of updating a dying one's notification.
+            running = false
             context.applicationContext.stopService(Intent(context.applicationContext, SessionService::class.java))
         }
 

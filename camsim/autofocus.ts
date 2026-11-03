@@ -10,7 +10,7 @@ import { composite, motionAt } from "./render.ts";
 import { depthAt, type Scene, type SceneLayer } from "./scenes.ts";
 
 /** AF area size per method, as fractions of the frame width and height. */
-export const AF_AREA: Record<string, [number, number]> = {
+const AF_AREA: Record<string, [number, number]> = {
   spot: [0.015, 0.022],
   "1point": [0.03, 0.045],
   expand_cross: [0.07, 0.1],
@@ -38,7 +38,7 @@ export function afArea(method: string, point: { x: number; y: number }, w: numbe
 }
 
 /** The frontmost layer covering a sensor pixel at `time`, and its distance there. */
-export function layerAtPixel(scene: Scene, x: number, y: number, time: number): { layer: SceneLayer; depth: number } | null {
+function layerAtPixel(scene: Scene, x: number, y: number, time: number): { layer: SceneLayer; depth: number } | null {
   const cy = Math.min(scene.h - 1, Math.max(0, Math.floor(y)));
   let hit: { layer: SceneLayer; depth: number } | null = null;
   for (const l of scene.layers) {

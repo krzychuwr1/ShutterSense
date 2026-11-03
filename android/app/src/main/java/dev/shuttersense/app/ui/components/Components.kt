@@ -1,5 +1,8 @@
 package dev.shuttersense.app.ui.components
 
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.util.Base64
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -23,6 +26,7 @@ import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
@@ -41,9 +45,10 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -67,6 +72,8 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
@@ -80,7 +87,6 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.withStyle
 import dev.shuttersense.app.ui.Numeric
 import dev.shuttersense.app.ui.Palette
-import dev.shuttersense.app.ui.decodeDataUrl
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -103,7 +109,6 @@ fun PrimaryButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
-    loading: Boolean = false,
     icon: ImageVector? = null,
 ) {
     val source = remember { MutableInteractionSource() }
@@ -113,14 +118,11 @@ fun PrimaryButton(
             .pressScale(source)
             .clip(CircleShape)
             .background(if (enabled) Palette.Accent else Palette.Raised2)
-            .clickable(source, null, enabled = enabled && !loading, onClick = onClick),
+            .clickable(source, null, enabled = enabled, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 24.dp)) {
-            if (loading) {
-                CircularProgressIndicator(Modifier.size(18.dp), color = Palette.AccentInk, strokeWidth = 2.dp)
-                Spacer(Modifier.width(10.dp))
-            } else if (icon != null) {
+            if (icon != null) {
                 Icon(icon, null, Modifier.size(20.dp), tint = if (enabled) Palette.AccentInk else Palette.Muted)
                 Spacer(Modifier.width(8.dp))
             }
@@ -131,7 +133,7 @@ fun PrimaryButton(
 
 /** A quiet pill: raised surface, light text. */
 @Composable
-fun SecondaryButton(text: String, onClick: () -> Unit, modifier: Modifier = Modifier, icon: ImageVector? = null, height: Dp = 48.dp, enabled: Boolean = true) {
+fun SecondaryButton(text: String, onClick: () -> Unit, modifier: Modifier = Modifier, icon: ImageVector? = null, height: Dp = 48.dp) {
     val source = remember { MutableInteractionSource() }
     Box(
         modifier
@@ -139,10 +141,10 @@ fun SecondaryButton(text: String, onClick: () -> Unit, modifier: Modifier = Modi
             .pressScale(source)
             .clip(CircleShape)
             .background(Palette.Raised)
-            .clickable(source, null, enabled = enabled, onClick = onClick),
+            .clickable(source, null, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 18.dp).alpha(if (enabled) 1f else 0.4f)) {
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 18.dp)) {
             if (icon != null) {
                 Icon(icon, null, Modifier.size(18.dp), tint = Palette.Text)
                 Spacer(Modifier.width(8.dp))
@@ -167,7 +169,7 @@ fun TextAction(text: String, onClick: () -> Unit, modifier: Modifier = Modifier,
     }
 }
 
-/** A round icon button. */
+/** A round icon button; [content], when given, is drawn instead of [icon] ([description] still names the button). */
 @Composable
 fun RoundIcon(
     icon: ImageVector,
@@ -187,10 +189,11 @@ fun RoundIcon(
             .pressScale(source)
             .clip(CircleShape)
             .background(container)
-            .clickable(source, null, enabled = enabled, onClick = onClick),
+            .clickable(source, null, enabled = enabled, onClick = onClick)
+            .semantics { contentDescription = description },
         contentAlignment = Alignment.Center,
     ) {
-        if (content != null) content() else Icon(icon, description, Modifier.size(size * 0.5f).alpha(if (enabled) 1f else 0.35f), tint = tint)
+        if (content != null) content() else Icon(icon, null, Modifier.size(size * 0.5f).alpha(if (enabled) 1f else 0.35f), tint = tint)
     }
 }
 
@@ -305,6 +308,13 @@ fun NoticeToast(notice: String?, onShown: () -> Unit, modifier: Modifier = Modif
     }
 }
 
+/** A bottom sheet in the app's colours. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun Sheet(onDismiss: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
+    ModalBottomSheet(onDismiss, containerColor = Palette.Surface, contentColor = Palette.Text, scrimColor = Color(0x99000000), content = content)
+}
+
 /** A photo filling the screen: pinch to zoom, double-tap to reset, tap outside or back to close. */
 @Composable
 fun PhotoViewer(image: ImageBitmap, caption: String?, onDismiss: () -> Unit) {
@@ -372,4 +382,11 @@ fun rememberDataUrlImage(url: String?): ImageBitmap? {
         value = url?.let { withContext(Dispatchers.Default) { decodeDataUrl(it)?.asImageBitmap() } }
     }
     return state.value
+}
+
+private fun decodeDataUrl(url: String): Bitmap? = try {
+    val bytes = Base64.decode(url.substringAfter(","), Base64.DEFAULT)
+    BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+} catch (_: Exception) {
+    null
 }

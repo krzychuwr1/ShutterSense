@@ -235,12 +235,13 @@ async function inspire(request: Request, env: Env): Promise<Response> {
   const prompt = typeof body.prompt === "string" ? body.prompt.replace(/\s+/g, " ").trim().slice(0, INSPIRE_LIMITS.prompt) : "";
   if (!prompt) return json({ error: "prompt is required" }, 400);
   const image = typeof body.image === "string" ? body.image : "";
-  if (image && !image.startsWith("data:image/jpeg;base64,")) return json({ error: "image must be a JPEG data URL" }, 400);
+  const jpeg = image.startsWith("data:image/jpeg;base64,") ? base64Bytes(image.slice(image.indexOf(",") + 1)) : null;
+  if (image && !jpeg) return json({ error: "image must be a JPEG data URL" }, 400);
   if (!(await takeBudget(env))) return json({ error: "The demo is very busy right now. Try again in a few minutes." }, 429);
   const model = env.IMAGE_MODEL || MODELS.image;
   try {
-    const out = image
-      ? await editImage(env.MUSE_API_KEY, model, base64Bytes(image.slice(image.indexOf(",") + 1)), `${EDIT_PREFIX} ${prompt}`)
+    const out = jpeg
+      ? await editImage(env.MUSE_API_KEY, model, jpeg, `${EDIT_PREFIX} ${prompt}`)
       : await generateImage(env.MUSE_API_KEY, model, `${GENERATE_PREFIX} ${prompt}`);
     return json({ image: out });
   } catch (e) {
@@ -254,8 +255,15 @@ const EDIT_PREFIX =
   "Edit this camera live-view photo. Keep the same people (faces, clothes), the same place, light and colours, and the same camera position and lens. Change only how the people pose and arrange themselves, as described. Photorealistic, natural, no text or graphics. The change:";
 const GENERATE_PREFIX = "A natural, photorealistic photograph showing a pose and composition idea for a photographer. No text or graphics. The picture:";
 
-function base64Bytes(b64: string): Uint8Array {
-  const bin = atob(b64);
+/** Decoded base64, or null if it isn't valid (or is empty). */
+function base64Bytes(b64: string): Uint8Array | null {
+  let bin: string;
+  try {
+    bin = atob(b64);
+  } catch {
+    return null;
+  }
+  if (!bin) return null;
   const out = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
   return out;
@@ -311,11 +319,12 @@ function sanitizeInput(raw: unknown): unknown[] | string {
     }
     return out;
   };
+  const callId = (v: unknown) => String(v).slice(0, 100);
   const items: unknown[] = [];
   for (const item of raw) {
     if (!isObj(item)) return "bad input item";
     if (item.type === "function_call") {
-      items.push({ type: "function_call", call_id: String(item.call_id), name: String(item.name), arguments: String(item.arguments ?? "{}").slice(0, 10_000) });
+      items.push({ type: "function_call", call_id: callId(item.call_id), name: String(item.name).slice(0, 64), arguments: String(item.arguments ?? "{}").slice(0, 10_000) });
     } else if (item.type === "function_call_output") {
       let output: unknown;
       if (typeof item.output === "string") output = item.output.slice(0, 20_000);
@@ -324,7 +333,7 @@ function sanitizeInput(raw: unknown): unknown[] | string {
         if (typeof parts === "string") return parts;
         output = parts;
       }
-      items.push({ type: "function_call_output", call_id: String(item.call_id), output });
+      items.push({ type: "function_call_output", call_id: callId(item.call_id), output });
     } else if (item.role === "user" || item.role === "assistant") {
       const c = content(item.content, item.role === "assistant");
       if (typeof c === "string") return c;

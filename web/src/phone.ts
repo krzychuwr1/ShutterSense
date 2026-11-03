@@ -141,6 +141,8 @@ export class PhoneApp {
   private compare: HTMLElement;
   private glassesBtn: HTMLButtonElement;
   private sheet: HTMLElement;
+  /** Which sheet is open over the app: glasses updates must not redraw the presets sheet. */
+  private sheetOpen: "glasses" | "presets" | null = null;
   private newBtn: HTMLButtonElement;
   private presetsBtn: HTMLButtonElement;
 
@@ -227,15 +229,20 @@ export class PhoneApp {
     this.glassesBtn.addEventListener("click", () => this.openGlassesSheet());
     window.addEventListener("message", (e) => this.onWindowMessage(e));
 
-    this.run = new AgentRun(api, tools, this.ui(this.runSeq), {
+    this.run = this.newRun();
+    this.renderChips();
+    this.renderEmpty();
+  }
+
+  /** A fresh run with the current options; callbacks from earlier runs are ignored from now on. */
+  private newRun(): AgentRun {
+    return new AgentRun(api, this.tools, this.ui(++this.runSeq), {
       maxShots: this.maxShots,
       askBeforeShooting: this.askBefore,
       glasses: () => this.glassesOnline > 0,
       session,
       presets,
     });
-    this.renderChips();
-    this.renderEmpty();
   }
 
   // ---------------------------------------------------------------- camera
@@ -334,7 +341,9 @@ export class PhoneApp {
   /** Clears the run for a fresh goal. */
   private reset() {
     this.cancelRun();
-    this.runSeq++;
+    // A new run object: the cancelled one stays busy while it winds down, and
+    // text typed meanwhile must start a goal rather than go to it as a correction.
+    this.run = this.newRun();
     this.hud = { ...EMPTY_HUD, exposure: this.hud.exposure };
     this.pushHud();
     this.firstLook = null;
@@ -347,14 +356,7 @@ export class PhoneApp {
   }
 
   private startGoal(goal: string) {
-    this.runSeq++;
-    this.run = new AgentRun(api, this.tools, this.ui(this.runSeq), {
-      maxShots: this.maxShots,
-      askBeforeShooting: this.askBefore,
-      glasses: () => this.glassesOnline > 0,
-      session,
-      presets,
-    });
+    this.run = this.newRun();
     this.log.replaceChildren();
     this.firstLook = null;
     this.settingsTouched = false;
@@ -561,16 +563,26 @@ export class PhoneApp {
   // ---------------------------------------------------------------- presets
 
   private openPresets() {
-    this.sheet.hidden = false;
+    this.showSheet("presets");
     this.renderPresets();
   }
 
+  private showSheet(kind: "glasses" | "presets") {
+    this.sheetOpen = kind;
+    this.sheet.hidden = false;
+  }
+
+  private closeSheet() {
+    this.sheetOpen = null;
+    this.sheet.hidden = true;
+  }
+
   private renderPresets() {
-    const close = el("button", { class: "btn ghost small", type: "button", onclick: () => (this.sheet.hidden = true) }, ["Close"]);
+    const close = el("button", { class: "btn ghost small", type: "button", onclick: () => this.closeSheet() }, ["Close"]);
     const rows = presets.list().map((p) => {
       const use = el("button", { class: "btn primary small", type: "button" }, ["Use"]);
       use.addEventListener("click", () => {
-        this.sheet.hidden = true;
+        this.closeSheet();
         this.dispatch(`Apply my preset "${p.name}"`);
       });
       const del = el("button", { class: "btn ghost small", type: "button" }, ["Delete"]);
@@ -662,13 +674,24 @@ export class PhoneApp {
   // ---------------------------------------------------------------- glasses
 
   private async openGlassesSheet() {
-    this.sheet.hidden = false;
+    this.showSheet("glasses");
     this.renderSheet();
     try {
       await this.ensureRoom();
     } catch (e) {
-      this.renderSheet(e instanceof Error ? e.message : "Could not start a session");
+      this.updateSheet(e instanceof Error ? e.message : "Could not start a session");
     }
+  }
+
+  /** Redraws the glasses sheet if it is the one open. */
+  private updateSheet(error?: string) {
+    if (this.sheetOpen === "glasses") this.renderSheet(error);
+  }
+
+  private setGlassesOnline(n: number) {
+    this.glassesOnline = n;
+    this.glassesBtn.textContent = n ? "Glasses" : "Connect glasses";
+    this.glassesBtn.classList.toggle("on", n > 0);
   }
 
   /** Starts a glasses session (once) and asks for a pairing pattern unless glasses are already on. */
@@ -677,7 +700,7 @@ export class PhoneApp {
     this.roomReady ??= createRoom().then(
       (room) => {
         this.room = room;
-        this.conn = new RoomConn(room.code, "phone", (m) => this.onRoom(m), () => this.renderSheet(), room.token, () => this.roomGone());
+        this.conn = new RoomConn(room.code, "phone", (m) => this.onRoom(m), () => this.updateSheet(), room.token, () => this.roomGone());
         this.conn.start();
         this.pushHud(true);
       },
@@ -699,13 +722,13 @@ export class PhoneApp {
   /** The glasses session expired: the next "Connect glasses" starts a new one. */
   private roomGone() {
     this.room = this.roomReady = this.conn = this.pattern = null;
-    this.glassesOnline = 0;
-    this.renderSheet("The glasses session expired. Connect again to start a new one.");
+    this.setGlassesOnline(0);
+    this.updateSheet("The glasses session expired. Connect again to start a new one.");
   }
 
   private renderSheet(error?: string) {
     const close = el("button", { class: "btn ghost small", type: "button" }, ["Close"]);
-    close.addEventListener("click", () => (this.sheet.hidden = true));
+    close.addEventListener("click", () => this.closeSheet());
     const children: Array<Node | null> = [el("div", { class: "sheet-head" }, [el("strong", {}, ["Ray-Ban Display"]), close])];
     if (error) children.push(el("p", { class: "error-text" }, [error]));
     else if (this.glassesOnline) {
@@ -729,7 +752,7 @@ export class PhoneApp {
     const url = `/g?sim=${this.room.code}`;
     if (this.opts.simGlasses) {
       this.simWindow = this.opts.simGlasses(url);
-      this.sheet.hidden = true;
+      this.closeSheet();
     } else this.simWindow = window.open(url, `glasses-${this.room.code}`, "popup,width=600,height=600");
   }
 
@@ -744,16 +767,14 @@ export class PhoneApp {
       case "hello":
       case "presence": {
         const before = this.glassesOnline;
-        this.glassesOnline = m.presence.glasses;
-        this.glassesBtn.textContent = this.glassesOnline ? "Glasses" : "Connect glasses";
-        this.glassesBtn.classList.toggle("on", this.glassesOnline > 0);
-        if (!this.sheet.hidden) this.renderSheet();
+        this.setGlassesOnline(m.presence.glasses);
+        this.updateSheet();
         if (this.glassesOnline > before) this.pushHud(true);
         break;
       }
       case "pairing":
         this.pattern = m.pattern;
-        if (!this.sheet.hidden) this.renderSheet();
+        this.updateSheet();
         if (m.pattern) this.simWindow?.postMessage({ type: "sim-pair", moves: m.pattern }, location.origin);
         break;
       case "say":

@@ -28,11 +28,15 @@ async function call(url: string, init: RequestInit, timeoutMs: number, what: str
   }
   if (res.ok) return res;
   let detail = "";
-  try {
-    const body = await res.json<{ error?: { message?: string } }>();
-    detail = body?.error?.message ?? "";
-  } catch {
-    // body was not JSON
+  // An auth failure's message can quote part of the key: it stays in the logs, not the answer.
+  if (res.status === 401 || res.status === 403) console.error(`${what}: HTTP ${res.status}`, await res.text().catch(() => ""));
+  else {
+    try {
+      const body = await res.json<{ error?: { message?: string } }>();
+      detail = body?.error?.message ?? "";
+    } catch {
+      // body was not JSON
+    }
   }
   throw new MuseError(`${what} failed (${res.status})${detail ? `: ${detail}` : ""}`, res.status === 429 ? 429 : 502);
 }

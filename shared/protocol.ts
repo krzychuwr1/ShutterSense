@@ -21,7 +21,7 @@ export interface HudState {
   diff: string[];
   /** Last shot as a small JPEG data URL (at most HUD_THUMB_BYTES). */
   thumb: string | null;
-  /** Current exposure in one line: "Av f/2.8 · 1/500 · ISO 400 · +1". */
+  /** Current exposure in one line: "Av · f/2.8 · 1/500 s · ISO 400 · +1 EV". */
   exposure: string | null;
   /** The agent's latest note to the photographer. */
   message: string | null;

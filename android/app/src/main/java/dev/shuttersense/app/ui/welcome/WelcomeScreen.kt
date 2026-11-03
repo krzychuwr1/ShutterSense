@@ -51,6 +51,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.BiasAlignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
@@ -66,6 +67,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import dev.shuttersense.app.ui.Palette
+import dev.shuttersense.app.ui.WIDE
 import dev.shuttersense.app.ui.components.Eyebrow
 import dev.shuttersense.app.ui.components.GlassesGlyph
 import dev.shuttersense.app.ui.components.PrimaryButton
@@ -101,11 +103,11 @@ private val PAGES = listOf(
 fun WelcomeScreen(onDone: () -> Unit, canGoBack: Boolean) {
     val pager = rememberPagerState { PAGES.size }
     val scope = rememberCoroutineScope()
-    if (canGoBack) BackHandler(onBack = onDone)
+    BackHandler(enabled = canGoBack, onBack = onDone)
     val last = pager.currentPage == PAGES.lastIndex
 
     BoxWithConstraints(Modifier.fillMaxSize().background(Palette.Ink).windowInsetsPadding(WindowInsets.safeDrawing)) {
-        val wide = maxWidth >= 680.dp
+        val wide = maxWidth >= WIDE
         Column(Modifier.fillMaxSize()) {
             Row(Modifier.fillMaxWidth().height(56.dp).padding(start = 24.dp, end = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text("Shutter Sense", style = MaterialTheme.typography.titleMedium, color = Palette.Text, modifier = Modifier.weight(1f))
@@ -151,9 +153,10 @@ fun WelcomeScreen(onDone: () -> Unit, canGoBack: Boolean) {
                 }
             } else {
                 Column(Modifier.fillMaxSize().padding(bottom = 12.dp)) {
-                    Spacer(Modifier.weight(0.4f))
-                    diagram(Modifier.fillMaxWidth().height(320.dp).padding(horizontal = 16.dp))
-                    Spacer(Modifier.weight(0.6f))
+                    // The text keeps its height; on a short screen the diagram gives way.
+                    Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = BiasAlignment(0f, -0.2f)) {
+                        diagram(Modifier.fillMaxWidth().height(320.dp).padding(horizontal = 16.dp))
+                    }
                     text(Modifier.fillMaxWidth())
                 }
             }

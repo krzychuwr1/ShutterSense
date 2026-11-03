@@ -47,6 +47,9 @@ class SimulatorSmokeTest {
         val (lookText, _) = tools.look()
         println(lookText)
 
+        // From Av at 1/250 s, so the changes below happen whatever the scene (or the other test) left.
+        tools.set(mapOf("shootingmode" to JsonPrimitive("tv"), "tv" to JsonPrimitive("1/250")))
+        tools.set(mapOf("shootingmode" to JsonPrimitive("av")))
         val r = tools.set(
             mapOf(
                 "shootingmode" to JsonPrimitive("tv"),
@@ -66,7 +69,7 @@ class SimulatorSmokeTest {
         println("Shot 1 at ${shot.exposure}")
         assertTrue(shot.exposure.startsWith("Tv"))
         assertTrue(shot.exposure.contains("1/1000 s"))
-        // Back to where the scene started, so the simulator is left as found.
+        // Back to Av and auto white balance.
         tools.set(mapOf("shootingmode" to JsonPrimitive("av"), "wb" to JsonPrimitive("auto")))
     }
 

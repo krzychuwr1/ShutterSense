@@ -184,20 +184,18 @@ export class CcapiClient {
     if (res.status >= 200 && res.status < 300) return res;
     let message = `HTTP ${res.status}`;
     try {
-      const data = (await res.json()) as { message?: string };
-      if (data?.message) message = data.message.trim();
+      const data = (await res.json()) as { message?: unknown };
+      if (typeof data?.message === "string" && data.message.trim()) message = data.message.trim();
     } catch {
       // not JSON
     }
     throw new CcapiError(res.status, message, path);
   }
 
+  /** The answer as JSON; an empty body is an empty object. */
   private async callJson<T = unknown>(method: string, path: string, body?: unknown): Promise<T> {
     const res = await this.call(method, path, body);
-    if (!res.contentType.includes("json")) {
-      const bytes = await res.bytes();
-      if (!bytes.length) return {} as T;
-    }
+    if (!(await res.bytes()).length) return {} as T;
     return (await res.json()) as T;
   }
 
@@ -213,7 +211,8 @@ export class CcapiClient {
     this.endpoints.clear();
     for (const [version, list] of Object.entries(data)) {
       if (!/^ver\d+$/.test(version) || !Array.isArray(list)) continue;
-      for (const raw of list as Array<Record<string, unknown>>) {
+      for (const raw of list as Array<Record<string, unknown> | null>) {
+        if (!raw || typeof raw !== "object") continue;
         // Older cameras list absolute URLs ("url"), newer ones paths ("path").
         let path = typeof raw.path === "string" ? raw.path.trim() : "";
         if (!path && typeof raw.url === "string") {
@@ -506,7 +505,7 @@ export class CcapiClient {
   async setFields(name: string, changes: Record<string, string | number>): Promise<void> {
     const item = await this.compositeSetting(name);
     const value: Record<string, string | number> = {};
-    for (const [k, v] of Object.entries(item.value)) {
+    for (const [k, v] of Object.entries(item.value ?? {})) {
       // Fields with an empty list are read-only (the base of a user style).
       const ab = item.ability[k];
       if (Array.isArray(ab) && !ab.length) continue;
@@ -550,18 +549,17 @@ export class CcapiClient {
     if (Array.isArray(item.ability) && item.ability.length && !item.ability.includes(mode)) {
       throw new SettingError("shootingmode", `shootingmode "${mode}" is not available. Options: ${item.ability.join(", ")}.`);
     }
+    const refused = (e: unknown) => (e instanceof CcapiError ? new SettingError("shootingmode", `The camera refused shootingmode "${mode}" (${e.message}).`) : e);
     try {
       await this.call("PUT", path, { value: mode });
     } catch (e) {
       const ignore = this.endpoint("shooting/control/ignoreshootingmodedialmode", "post");
-      if (!(e instanceof CcapiError) || e.status !== 503 || !ignore) {
-        throw new SettingError("shootingmode", `The camera refused shootingmode "${mode}" (${e instanceof Error ? e.message : e}).`);
-      }
+      if (!(e instanceof CcapiError) || e.status !== 503 || !ignore) throw refused(e);
       await this.call("POST", ignore, { action: "on" });
       try {
         await this.call("PUT", path, { value: mode });
       } catch (e2) {
-        throw new SettingError("shootingmode", `The camera refused shootingmode "${mode}" (${e2 instanceof Error ? e2.message : e2}).`);
+        throw refused(e2);
       }
     }
   }
@@ -710,7 +708,11 @@ export class CcapiClient {
   async liveDetail(kind: "image" | "info" | "both" = "both"): Promise<LiveDetail> {
     const path = this.need("shooting/liveview/flipdetail", "get");
     const bytes = await this.liveRetry(async () => (await this.call("GET", `${path}?kind=${kind}`)).bytes());
-    return detailFrames(parseRecords(bytes))[0] ?? {};
+    // One frame: its picture and its information, in whichever order the camera sends them.
+    const frames = detailFrames(parseRecords(bytes));
+    const image = frames.find((f) => f.image)?.image;
+    const info = frames.find((f) => f.info)?.info;
+    return { ...(image ? { image } : {}), ...(info ? { info } : {}) };
   }
 
   /**
@@ -724,7 +726,7 @@ export class CcapiClient {
     const res = await this.call("GET", kind === "scrolldetail" ? `${path}?kind=${detail}` : path);
     const bytes = await res.bytes();
     if (kind === "scrolldetail") return detailFrames(parseRecords(bytes));
-    if (kind === "multipart") return parseMultipart(bytes).map((image) => ({ image }));
+    if (kind === "multipart") return parseMultipart(bytes, multipartBoundary(res.contentType)).map((image) => ({ image }));
     return splitJpegs(bytes).map((image) => ({ image }));
   }
 
@@ -798,11 +800,12 @@ export class CcapiClient {
     await this.call("DELETE", this.need("event/monitoring", "delete"));
   }
 
-  /** Waits for the next file the camera writes and returns its path (JPEG preferred). */
-  async waitForNewFile(timeoutMs = 15_000, onEvent?: (e: Record<string, unknown>) => void): Promise<string> {
+  /** Waits for the next file the camera writes and returns its path (JPEG preferred). `signal` stops the wait. */
+  async waitForNewFile(timeoutMs = 15_000, onEvent?: (e: Record<string, unknown>) => void, signal?: AbortSignal): Promise<string> {
     const deadline = Date.now() + timeoutMs;
     const hasVersion110 = (this.endpoints.get("event/polling") ?? []).some((e) => versionNumber(e.version) >= 110);
     while (Date.now() < deadline) {
+      signal?.throwIfAborted();
       const ev = await this.poll(hasVersion110 ? "short" : "immediately");
       onEvent?.(ev);
       const added = Array.isArray(ev.addedcontents) ? (ev.addedcontents as unknown[]).map(String) : [];
@@ -837,7 +840,9 @@ export class CcapiClient {
 
   /** How many entries a folder holds, and in how many pages. */
   contentsCount(dir: string, type?: string) {
-    return this.callJson<{ contentsnumber: number; pagenumber: number }>("GET", `${toPath(dir)}?kind=number${type ? `&type=${type}` : ""}`);
+    const q = new URLSearchParams({ kind: "number" });
+    if (type) q.set("type", type);
+    return this.callJson<{ contentsnumber: number; pagenumber: number }>("GET", `${toPath(dir)}?${q}`);
   }
 
   /** Every entry of a folder, page by page. */
@@ -1004,14 +1009,15 @@ function detailFrames(records: FramedRecord[]): LiveDetail[] {
   return out;
 }
 
-/** The JPEGs of a multipart/x-mixed-replace body (boundary "boundary", LF or CRLF line ends). */
-export function parseMultipart(bytes: Uint8Array): Uint8Array[] {
+/** The JPEGs of a multipart/x-mixed-replace body (LF or CRLF line ends). */
+export function parseMultipart(bytes: Uint8Array, boundary = "boundary"): Uint8Array[] {
   const text = new TextDecoder("latin1").decode(bytes);
   const out: Uint8Array[] = [];
+  const mark = `--${boundary}`;
   let o = 0;
   for (;;) {
-    const b = text.indexOf("--boundary", o);
-    if (b < 0 || text.startsWith("--boundary--", b)) break;
+    const b = text.indexOf(mark, o);
+    if (b < 0 || text.startsWith(`${mark}--`, b)) break;
     const headerEnd = text.slice(b).search(/\r?\n\r?\n/);
     if (headerEnd < 0) break;
     const head = text.slice(b, b + headerEnd);
@@ -1023,6 +1029,11 @@ export function parseMultipart(bytes: Uint8Array): Uint8Array[] {
     o = start + len;
   }
   return out;
+}
+
+/** The boundary a multipart content type names, or "boundary". */
+function multipartBoundary(contentType: string): string {
+  return contentType.match(/boundary="?([^";\s]+)"?/i)?.[1] ?? "boundary";
 }
 
 /** Back-to-back JPEGs split at their end markers (a de-chunked scroll stream). */

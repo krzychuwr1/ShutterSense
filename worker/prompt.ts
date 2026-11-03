@@ -56,13 +56,14 @@ export function buildInstructions(ctx: AgentContext): string {
     `- Photographer's goal: ${ctx.goal}`,
     `- Camera: ${ctx.camera}`,
     `- Test shots used: ${ctx.shotsTaken} of ${ctx.maxShots} (${left} left).${left === 0 ? " No shots left: call finish now with the best result so far." : ""}`,
-    ctx.askBeforeShooting ? "- The photographer approves each shot on the phone; a declined shot returns an error, don't retry it without changing something." : "",
-    ctx.glasses ? "- The photographer wears smart glasses: tell_user and ask_user show on the lens, so keep them short." : "",
+    ctx.askBeforeShooting ? "- The photographer approves each shot on the phone; a declined shot returns an error, don't retry it without changing something." : null,
+    ctx.glasses ? "- The photographer wears smart glasses: tell_user and ask_user show on the lens, so keep them short." : null,
     "",
     "Saved presets (for apply_preset)",
     ctx.presets?.length ? ctx.presets.map((p) => `- ${p.name}${p.note ? ` (${p.note})` : ""}: ${p.settings}`).join("\n") : "- none yet",
   ];
-  return lines.filter((l) => l !== "").join("\n");
+  // Only the lines that don't apply go; the empty strings separate the sections.
+  return lines.filter((l) => l !== null).join("\n");
 }
 
 const str = (description: string) => ({ type: "string", description });

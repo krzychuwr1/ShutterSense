@@ -28,7 +28,7 @@ object CameraWifi {
     @Volatile var ssid: String? = null
         private set
 
-    private var callback: ConnectivityManager.NetworkCallback? = null
+    @Volatile private var callback: ConnectivityManager.NetworkCallback? = null
 
     /**
      * Joins the network named [name] for this app. Android shows its
@@ -71,7 +71,8 @@ object CameraWifi {
             }
             callback = cb
             cm.requestNetwork(request, cb)
-            cont.invokeOnCancellation { leave(context) }
+            // Only this join's request: a later join may have replaced it.
+            cont.invokeOnCancellation { if (callback === cb) leave(context) }
         }
     }
 

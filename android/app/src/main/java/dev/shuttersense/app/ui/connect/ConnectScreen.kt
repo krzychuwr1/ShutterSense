@@ -91,8 +91,8 @@ import kotlinx.coroutines.delay
 @Composable
 fun ConnectScreen(vm: AppViewModel) {
     LaunchedEffect(Unit) { if (vm.camera !is CameraStatus.Connected) vm.searchCameras() }
-    // A fresh connection moves on by itself after a moment; coming back here doesn't.
-    var sawConnecting by remember { mutableStateOf(false) }
+    // A fresh connection moves on by itself after a moment (also across a rotation); coming back here doesn't.
+    var sawConnecting by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(vm.camera) {
         when (vm.camera) {
             is CameraStatus.Connecting -> sawConnecting = true

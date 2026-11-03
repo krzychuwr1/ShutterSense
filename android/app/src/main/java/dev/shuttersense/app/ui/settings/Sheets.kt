@@ -28,10 +28,8 @@ import androidx.compose.material.icons.rounded.LinkOff
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.SwapHoriz
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -42,7 +40,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -60,6 +57,7 @@ import dev.shuttersense.app.ui.components.Field
 import dev.shuttersense.app.ui.components.GlassesGlyph
 import dev.shuttersense.app.ui.components.SecondaryButton
 import dev.shuttersense.app.ui.components.SettingChip
+import dev.shuttersense.app.ui.components.Sheet
 import dev.shuttersense.app.ui.components.StatusDot
 import dev.shuttersense.app.ui.components.TextAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -68,18 +66,14 @@ import kotlinx.coroutines.delay
 // The sheets off the top bar: the menu (camera, glasses, presets, agent
 // server, how it works, about), the saved presets and glasses pairing.
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsSheet(vm: AppViewModel, onDismiss: () -> Unit) {
-    ModalBottomSheet(
-        onDismissRequest = {
-            vm.saveSettings()
-            onDismiss()
-        },
-        containerColor = Palette.Surface,
-        contentColor = Palette.Text,
-        scrimColor = Color(0x99000000),
-    ) {
+    // Every way out keeps an edited agent server URL.
+    val close = {
+        vm.saveSettings()
+        onDismiss()
+    }
+    Sheet(close) {
         Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp).padding(bottom = 28.dp)) {
             val c = vm.camera as? CameraStatus.Connected
             Eyebrow("Camera")
@@ -100,23 +94,23 @@ fun SettingsSheet(vm: AppViewModel, onDismiss: () -> Unit) {
             }
             Spacer(Modifier.height(14.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                SecondaryButton("Switch camera", { onDismiss(); vm.openChooser() }, Modifier.weight(1f), icon = Icons.Rounded.SwapHoriz)
-                if (!vm.demo) SecondaryButton("Disconnect", { onDismiss(); vm.disconnect() }, Modifier.weight(1f), icon = Icons.Rounded.LinkOff)
+                SecondaryButton("Switch camera", { close(); vm.openChooser() }, Modifier.weight(1f), icon = Icons.Rounded.SwapHoriz)
+                if (!vm.demo) SecondaryButton("Disconnect", { close(); vm.disconnect() }, Modifier.weight(1f), icon = Icons.Rounded.LinkOff)
             }
 
             Spacer(Modifier.height(28.dp))
             Eyebrow("More")
             Spacer(Modifier.height(6.dp))
-            MenuRow(null, "Glasses", if (vm.glassesOnline > 0) "${vm.glassesOnline} connected" else "Pair Ray-Ban Display", { onDismiss(); vm.openGlasses() }) {
+            MenuRow(null, "Glasses", if (vm.glassesOnline > 0) "${vm.glassesOnline} connected" else "Pair Ray-Ban Display", { close(); vm.openGlasses() }) {
                 GlassesGlyph(Palette.Text, size = 22.dp)
             }
             MenuRow(
                 Icons.Rounded.Bookmark,
                 "Presets",
                 if (vm.presets.isEmpty()) "None saved yet" else "${vm.presets.size} saved",
-                { onDismiss(); vm.showPresets = true },
+                { close(); vm.showPresets = true },
             )
-            MenuRow(Icons.AutoMirrored.Rounded.HelpOutline, "How it works", "The welcome tour", { onDismiss(); vm.openWelcome() })
+            MenuRow(Icons.AutoMirrored.Rounded.HelpOutline, "How it works", "The welcome tour", { close(); vm.openWelcome() })
 
             Spacer(Modifier.height(22.dp))
             Eyebrow("Agent server")
@@ -156,15 +150,9 @@ private fun MenuRow(icon: ImageVector?, title: String, sub: String, onClick: () 
 
 // ------------------------------------------------------------------ presets
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PresetsSheet(vm: AppViewModel) {
-    ModalBottomSheet(
-        onDismissRequest = { vm.showPresets = false },
-        containerColor = Palette.Surface,
-        contentColor = Palette.Text,
-        scrimColor = Color(0x99000000),
-    ) {
+    Sheet({ vm.showPresets = false }) {
         Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp).padding(bottom = 32.dp)) {
             Text("Presets", style = MaterialTheme.typography.headlineSmall, color = Palette.Text)
             Spacer(Modifier.height(8.dp))
@@ -228,16 +216,10 @@ private fun PresetRow(p: Preset, vm: AppViewModel) {
 
 private val ARROWS = mapOf('U' to "↑", 'D' to "↓", 'L' to "←", 'R' to "→")
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun GlassesSheet(vm: AppViewModel) {
-    ModalBottomSheet(
-        onDismissRequest = { vm.showGlasses = false },
-        containerColor = Palette.Surface,
-        contentColor = Palette.Text,
-        scrimColor = Color(0x99000000),
-    ) {
-        Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp).padding(bottom = 32.dp)) {
+    Sheet({ vm.showGlasses = false }) {
+        Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp).padding(bottom = 32.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 GlassesGlyph(Palette.Accent, size = 26.dp)
                 Spacer(Modifier.width(12.dp))

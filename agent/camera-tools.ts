@@ -35,7 +35,7 @@ export interface ShotResult {
   jpeg: Uint8Array;
   image: PreparedImage;
   thumb: string;
-  /** "f/2.8 · 1/1000 s · ISO 1600". */
+  /** "Av · f/2.8 · 1/1000 s · ISO 1600". */
   exposure: string;
   settings: Settings;
 }
@@ -103,7 +103,7 @@ export class CameraTools {
   }
 
   /**
-   * "Av f/2.8 · 1/1000 s · ISO 1600 · +1 EV", using camera-chosen values where
+   * "Av · f/2.8 · 1/1000 s · ISO 1600 · +1 EV", using camera-chosen values where
    * the mode picks them. `used` holds what a shot reported it actually used
    * (flash caps the shutter at the sync speed, say), which wins.
    */
@@ -151,8 +151,8 @@ export class CameraTools {
       try {
         const d = await this.client.pictureStyleDetail(style);
         const value = d.value as Record<string, unknown> | null;
-        const ability = d.ability as Record<string, unknown>;
-        if (value) styleDetail = Object.fromEntries(STYLE_DETAIL_FIELDS.filter((f) => f in value).map((f) => [f, { value: value[f], range: ability[f] }]));
+        const ability = d.ability as Record<string, unknown> | null;
+        if (value) styleDetail = Object.fromEntries(STYLE_DETAIL_FIELDS.filter((f) => f in value).map((f) => [f, { value: value[f], range: ability?.[f] }]));
       } catch {
         // not every style or camera exposes fine-tuning
       }
@@ -362,7 +362,7 @@ export class CameraTools {
       for (const [k, v] of Object.entries(effectiveValues(ev))) used[k] ??= v;
     };
     await this.client.shutter(af, undefined, signal);
-    const path = await this.client.waitForNewFile(20_000, seen);
+    const path = await this.client.waitForNewFile(20_000, seen, signal);
     const jpeg = await this.client.download(path, "display");
     const image = await this.images.prepare(jpeg, MODEL_IMAGE_SIDE, 0.82);
     const thumb = (await this.images.prepare(jpeg, THUMB_SIDE, 0.6)).dataUrl;

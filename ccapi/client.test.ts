@@ -4,7 +4,7 @@ import { VirtualCamera } from "../camsim/camera.ts";
 import { simTransport } from "../camsim/transport.ts";
 import { encodeJpegNode } from "../tools/jpeg-node.ts";
 import { loadImageNode } from "../tools/scene-files-node.ts";
-import { CcapiClient, CcapiError, checkValue, SettingError, type HttpResponse, type Transport } from "./client.ts";
+import { CcapiClient, CcapiError, checkValue, parseMultipart, SettingError, type HttpResponse, type Transport } from "./client.ts";
 
 async function setup(scene = "dog") {
   let now = 0;
@@ -34,6 +34,28 @@ test("discovery accepts the older absolute-URL form and the activation-free fall
   const client = new CcapiClient(fake);
   await client.discover();
   assert.equal(client.endpoint("shooting/settings/av", "put"), "/ccapi/ver100/shooting/settings/av");
+});
+
+test("an empty answer reads as an empty object; a blank error message keeps the status", async () => {
+  const answers: Record<string, { status: number; body: string }> = {
+    "/ccapi": { status: 200, body: JSON.stringify({ ver100: [{ path: "/ccapi/ver100/deviceinformation", get: true }, { path: "/ccapi/ver100/devicestatus/temperature", get: true }] }) },
+    "/ccapi/ver100/deviceinformation": { status: 200, body: "" },
+    "/ccapi/ver100/devicestatus/temperature": { status: 503, body: JSON.stringify({ message: "  " }) },
+  };
+  const fake: Transport = async (_m, path): Promise<HttpResponse> => {
+    const bytes = new TextEncoder().encode(answers[path].body);
+    return { status: answers[path].status, contentType: "application/json", json: async () => JSON.parse(answers[path].body), bytes: async () => bytes };
+  };
+  const client = new CcapiClient(fake);
+  await client.discover();
+  assert.deepEqual(await client.deviceInfo(), {});
+  await assert.rejects(client.temperature(), (e: unknown) => e instanceof CcapiError && e.status === 503 && e.message === "HTTP 503");
+});
+
+test("multipart streams split on the boundary the content type names", () => {
+  const enc = new TextEncoder();
+  const body = enc.encode("--frame\r\nContent-Type: image/jpeg\r\nContent-Length: 3\r\n\r\nabc\r\n--frame\r\nContent-Length: 2\r\n\r\nde\r\n--frame--\r\n");
+  assert.deepEqual(parseMultipart(body, "frame").map((b) => new TextDecoder().decode(b)), ["abc", "de"]);
 });
 
 test("settings follow the mode: shutter speed is camera-chosen in Av", async () => {

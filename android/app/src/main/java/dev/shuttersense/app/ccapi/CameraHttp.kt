@@ -49,7 +49,7 @@ object CameraHttp {
      * self-signed certificate, so certificate checks are switched off here,
      * and only here: the worker client keeps normal TLS.
      */
-    fun client(address: CameraAddress): OkHttpClient {
+    private fun client(address: CameraAddress): OkHttpClient {
         val b = OkHttpClient.Builder()
             .connectTimeout(5, TimeUnit.SECONDS)
             // Event polling can hold the connection for about 10 s.
@@ -74,7 +74,8 @@ object CameraHttp {
         return b.build()
     }
 
-    fun transport(address: CameraAddress, http: OkHttpClient = client(address)): CcapiTransport {
+    fun transport(address: CameraAddress): CcapiTransport {
+        val http = client(address)
         val base = address.baseUrl
         // A stream may stay quiet for longer than any read timeout (no events, live view paused).
         val streaming = http.newBuilder().readTimeout(0, TimeUnit.SECONDS).build()
@@ -102,14 +103,14 @@ private fun request(base: String, method: String, path: String, body: JsonElemen
 }
 
 /** One request, body read off the main thread (OkHttp bodies are blocking streams). */
-suspend fun OkHttpClient.send(base: String, method: String, path: String, body: JsonElement?, headers: Map<String, String> = emptyMap()): RawResponse =
+private suspend fun OkHttpClient.send(base: String, method: String, path: String, body: JsonElement?, headers: Map<String, String> = emptyMap()): RawResponse =
     newCall(request(base, method, path, body, headers)).readResponse { res ->
         val names = res.headers.names().associate { it.lowercase() to res.headers(it).joinToString(", ") }
         RawResponse(res.code, res.header("content-type") ?: "", res.body?.bytes() ?: ByteArray(0), names)
     }
 
 /** A request whose body is handed to [read] as it arrives. */
-suspend fun <T> OkHttpClient.stream(base: String, method: String, path: String, read: suspend (StreamResponse) -> T): T =
+private suspend fun <T> OkHttpClient.stream(base: String, method: String, path: String, read: suspend (StreamResponse) -> T): T =
     newCall(request(base, method, path, null, emptyMap())).readResponse { res ->
         val body = res.body?.byteStream() ?: ByteArrayInputStream(ByteArray(0))
         read(StreamResponse(res.code, res.header("content-type") ?: "", body))
@@ -117,8 +118,9 @@ suspend fun <T> OkHttpClient.stream(base: String, method: String, path: String, 
 
 /**
  * Runs the call and hands its response to [read] off the main thread, closing
- * it after. Blocking body reads don't notice coroutine cancellation, so a
- * watcher cancels the call, which makes the read fail and lets [read] return.
+ * it there too (closing a body that wasn't read to its end still reads from
+ * the socket). Blocking body reads don't notice coroutine cancellation, so a watcher
+ * cancels the call, which makes the read fail and lets [read] return.
  */
 suspend fun <T> Call.readResponse(read: suspend (Response) -> T): T = coroutineScope {
     val call = this@readResponse
@@ -131,7 +133,7 @@ suspend fun <T> Call.readResponse(read: suspend (Response) -> T): T = coroutineS
         }
     }
     try {
-        call.await().use { res -> withContext(Dispatchers.IO) { read(res) } }
+        withContext(Dispatchers.IO) { call.await().use { res -> read(res) } }
     } catch (e: IOException) {
         // A read failed by the cancel above reports the cancellation, not the IOException.
         ensureActive()
@@ -142,7 +144,7 @@ suspend fun <T> Call.readResponse(read: suspend (Response) -> T): T = coroutineS
 }
 
 /** Suspends until the call completes; cancelling the coroutine cancels the call. */
-suspend fun Call.await(): Response = suspendCancellableCoroutine { cont ->
+private suspend fun Call.await(): Response = suspendCancellableCoroutine { cont ->
     enqueue(object : Callback {
         // A response that arrives after cancellation is closed, not leaked.
         override fun onResponse(call: Call, response: Response) = cont.resume(response) { _, r, _ -> r.close() }

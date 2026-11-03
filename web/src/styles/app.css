@@ -46,7 +46,6 @@ body.demo-body, body.landing-body {
 }
 button, input, select, textarea { font: inherit; color: inherit; }
 .muted { color: var(--muted); }
-.small { font-size: 0.85em; }
 [hidden] { display: none !important; }
 :focus-visible { outline: 3px solid rgba(51, 85, 255, 0.45); outline-offset: 3px; }
 

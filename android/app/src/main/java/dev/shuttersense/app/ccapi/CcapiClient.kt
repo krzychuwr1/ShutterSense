@@ -116,7 +116,7 @@ class CcapiClient(private val transport: CcapiTransport) {
     private fun failure(status: Int, body: ByteArray, path: String): CcapiException {
         var message = "HTTP $status"
         try {
-            val m = (RawResponse(status, "", body).json() as? JsonObject)?.str("message")
+            val m = ((RawResponse(status, "", body).json() as? JsonObject)?.get("message") as? JsonPrimitive)?.takeIf { it.isString }?.content
             if (!m.isNullOrBlank()) message = m.trim()
         } catch (_: Exception) {
             // not JSON
@@ -130,11 +130,8 @@ class CcapiClient(private val transport: CcapiTransport) {
         throw failure(res.status, res.body, path)
     }
 
-    private suspend fun callJson(method: String, path: String, body: JsonElement? = null): JsonElement {
-        val res = call(method, path, body)
-        if (!res.contentType.contains("json") && res.body.isEmpty()) return JsonObject(emptyMap())
-        return res.json()
-    }
+    /** The answer as JSON; an empty body is an empty object. */
+    private suspend fun callJson(method: String, path: String, body: JsonElement? = null): JsonElement = call(method, path, body).json()
 
     private suspend fun callObject(method: String, path: String, body: JsonElement? = null): JsonObject =
         callJson(method, path, body) as? JsonObject ?: JsonObject(emptyMap())
@@ -618,19 +615,18 @@ class CcapiClient(private val transport: CcapiTransport) {
         return liveRetry { call("GET", path).body }
     }
 
-    /** A live-view frame and/or its incidental information ([kind] "image", "info" or "both"). */
-    suspend fun liveDetail(kind: String = "both"): LiveDetail = liveDetailFrames(kind).firstOrNull() ?: LiveDetail()
-
-    /** One live-view frame together with its incidental information, in whichever order the camera sends them. */
-    suspend fun liveFrameWithInfo(): LiveDetail {
-        val frames = liveDetailFrames("both")
+    /**
+     * A live-view frame and/or its incidental information ([kind] "image",
+     * "info" or "both"), in whichever order the camera sends the two.
+     */
+    suspend fun liveDetail(kind: String = "both"): LiveDetail {
+        val path = need("shooting/liveview/flipdetail", "get")
+        val frames = detailFrames(parseRecords(liveRetry { call("GET", "$path?kind=$kind").body }))
         return LiveDetail(frames.firstNotNullOfOrNull { it.image }, frames.firstNotNullOfOrNull { it.info })
     }
 
-    private suspend fun liveDetailFrames(kind: String): List<LiveDetail> {
-        val path = need("shooting/liveview/flipdetail", "get")
-        return detailFrames(parseRecords(liveRetry { call("GET", "$path?kind=$kind").body }))
-    }
+    /** One live-view frame together with its incidental information. */
+    suspend fun liveFrameWithInfo(): LiveDetail = liveDetail("both")
 
     private fun streamPath(kind: String, detail: String): String {
         val path = need("shooting/liveview/$kind", "get")

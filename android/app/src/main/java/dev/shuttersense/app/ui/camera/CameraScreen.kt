@@ -32,6 +32,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -39,8 +40,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material3.MaterialTheme
@@ -108,45 +111,48 @@ fun CameraScreen(vm: AppViewModel, modifier: Modifier = Modifier, showAgentLink:
     val dials = m.dials
     val current = dials.firstOrNull { it.key == selected } ?: dials.firstOrNull()
 
-    Column(modifier) {
-        LiveView(vm, m, Modifier.fillMaxWidth().padding(horizontal = 12.dp))
-        Spacer(Modifier.height(14.dp))
+    // Scrolls only when the controls don't fit under the live view (a phone on its side).
+    BoxWithConstraints(modifier) {
+        Column(Modifier.verticalScroll(rememberScrollState()).heightIn(min = maxHeight).fillMaxWidth()) {
+            LiveView(vm, m, Modifier.fillMaxWidth().padding(horizontal = 12.dp))
+            Spacer(Modifier.height(14.dp))
 
-        Box(Modifier.fillMaxWidth()) {
-            Column(Modifier.alpha(if (vm.busy) 0.35f else 1f)) {
-                DialRow(dials, current?.key, enabled = !vm.busy) { selected = it }
-                Spacer(Modifier.height(6.dp))
-                Box(Modifier.fillMaxWidth().height(60.dp), contentAlignment = Alignment.Center) {
-                    if (current != null) {
-                        if (current.changeable && current.options.isNotEmpty()) {
-                            key(current.key) { ValueStrip(current, enabled = !vm.busy && m.applying == null) { m.select(current.key, it) } }
-                        } else {
-                            val mode = CameraValues.prettyValue("shootingmode", dials.firstOrNull { it.key == "shootingmode" }?.value.orEmpty())
-                            Text(
-                                if (current.key == "shootingmode") "The mode is set on the camera's dial" else "Chosen by the camera in $mode",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = Palette.Muted,
-                            )
+            Box(Modifier.fillMaxWidth()) {
+                Column(Modifier.alpha(if (vm.busy) 0.35f else 1f)) {
+                    DialRow(dials, current?.key, enabled = !vm.busy) { selected = it }
+                    Spacer(Modifier.height(6.dp))
+                    Box(Modifier.fillMaxWidth().height(60.dp), contentAlignment = Alignment.Center) {
+                        if (current != null) {
+                            if (current.changeable && current.options.isNotEmpty()) {
+                                key(current.key) { ValueStrip(current, enabled = !vm.busy && m.applying == null) { m.select(current.key, it) } }
+                            } else {
+                                val mode = CameraValues.prettyValue("shootingmode", dials.firstOrNull { it.key == "shootingmode" }?.value.orEmpty())
+                                Text(
+                                    if (current.key == "shootingmode") "The mode is set on the camera's dial" else "Chosen by the camera in $mode",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = Palette.Muted,
+                                )
+                            }
                         }
                     }
                 }
-            }
-            if (vm.busy) {
-                Row(
-                    Modifier.align(Alignment.Center).clip(CircleShape).background(Palette.Raised2).padding(start = 16.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text("Paused while the agent works", style = MaterialTheme.typography.bodyMedium, color = Palette.Text)
-                    if (showAgentLink) TextAction("Show", { vm.tab = Tab.AGENT }, color = Palette.Accent) else Spacer(Modifier.width(10.dp))
+                if (vm.busy) {
+                    Row(
+                        Modifier.align(Alignment.Center).clip(CircleShape).background(Palette.Raised2).padding(start = 16.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text("Paused while the agent works", style = MaterialTheme.typography.bodyMedium, color = Palette.Text)
+                        if (showAgentLink) TextAction("Show", { vm.tab = Tab.AGENT }, color = Palette.Accent) else Spacer(Modifier.width(10.dp))
+                    }
                 }
             }
-        }
 
-        Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-            m.histogram?.let { if (!vm.busy) Histogram(it, Modifier.fillMaxWidth().height(64.dp).padding(horizontal = 32.dp)) }
+            Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                m.histogram?.let { if (!vm.busy) Histogram(it, Modifier.fillMaxWidth().height(64.dp).padding(horizontal = 32.dp)) }
+            }
+            ShutterRow(m, enabled = !vm.busy, onOpen = { viewing = true })
+            Spacer(Modifier.height(16.dp))
         }
-        ShutterRow(m, enabled = !vm.busy, onOpen = { viewing = true })
-        Spacer(Modifier.height(16.dp))
     }
 
     val shot = m.lastShot

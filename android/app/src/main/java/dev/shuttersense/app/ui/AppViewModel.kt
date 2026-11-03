@@ -2,9 +2,7 @@ package dev.shuttersense.app.ui
 
 import android.app.Application
 import android.content.Context
-import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import android.util.Base64
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
@@ -50,8 +48,11 @@ import dev.shuttersense.app.sim.SimulatedCamera
 import dev.shuttersense.app.ui.camera.ManualCamera
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -72,7 +73,9 @@ sealed class CameraStatus {
 
 class Question(val text: String, val options: List<String>, val answer: CompletableDeferred<String>)
 class ShotApproval(val n: Int, val reason: String, val answer: CompletableDeferred<Boolean>)
-class ShotThumb(val n: Int, val bitmap: Bitmap, val exposure: String)
+
+/** A picture for before / after, as a JPEG data URL (decoded where it is shown, off the main thread). */
+class ShotThumb(val n: Int, val image: String, val exposure: String)
 
 enum class Tab { AGENT, CAMERA }
 
@@ -93,7 +96,7 @@ val EXAMPLE_GOALS = listOf(
 const val DEFAULT_WORKER = "https://shuttersense.pages.dev"
 const val EMULATOR_WORKER = "http://10.0.2.2:8790"
 
-class AppViewModel(app: Application) : AndroidViewModel(app), RunUi, RoomListener {
+class AppViewModel(app: Application) : AndroidViewModel(app), RoomListener {
     private val prefs = app.getSharedPreferences("shutter-sense", Context.MODE_PRIVATE)
 
     // ---------------------------------------------------------------- settings (persisted)
@@ -212,6 +215,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app), RunUi, RoomListene
     private var hud = HudState()
     private var recorder: Recorder? = null
 
+    /** Work tied to the current camera (connecting, scene switches, manual control); [disconnect] cancels it. */
+    private var cameraScope = newCameraScope()
+
+    private fun newCameraScope() = CoroutineScope(viewModelScope.coroutineContext + SupervisorJob(viewModelScope.coroutineContext[Job]))
+
     private var workerClient: WorkerClient? = null
     private val worker: WorkerClient
         get() = workerClient?.takeIf { it.base == workerUrl.trim().trimEnd('/') } ?: WorkerClient(workerUrl).also { workerClient = it }
@@ -236,7 +244,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app), RunUi, RoomListene
         prefs.edit().putBoolean("welcomeSeen", true).apply()
     }
 
-    private fun remember(choice: String) {
+    private fun rememberChoice(choice: String) {
         lastChoice = choice
         prefs.edit().putString("choice", choice).apply()
     }
@@ -249,18 +257,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app), RunUi, RoomListene
 
     /** "Connect my camera": the connect screen. */
     fun chooseCamera() {
-        remember("camera")
+        rememberChoice("camera")
         setup = Setup.CAMERA
     }
 
     /** "Try the demo": starts the simulated camera and goes straight to the main screens. */
     fun startDemo() {
         if (demoStarting) return
-        remember("demo")
+        rememberChoice("demo")
         saveSettings()
         run?.cancel()
         demoStarting = true
-        viewModelScope.launch {
+        cameraScope.launch {
             try {
                 sim.start()
                 val t = CameraTools(CcapiClient(sim.transport), AndroidImageTools())
@@ -268,6 +276,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app), RunUi, RoomListene
                 attach(t, demo = true)
                 inMain = true
                 loadScenes()
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 setup = Setup.CHOOSE
                 notice = "The demo camera couldn't start: ${e.message ?: e.javaClass.simpleName}"
@@ -289,10 +299,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app), RunUi, RoomListene
                     val bytes = sim.thumbnail(sc.id)
                     withContext(Dispatchers.Default) { BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap() }
                         ?.let { sceneThumbs[sc.id] = it }
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (_: Exception) {
                     // the picker shows the title alone
                 }
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (_: Exception) {
             // no scene list: the switcher stays hidden
         }
@@ -302,7 +316,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app), RunUi, RoomListene
     fun selectScene(id: String) {
         if (!demo || busy || switchingScene || id == sceneId) return
         switchingScene = true
-        viewModelScope.launch {
+        cameraScope.launch {
             try {
                 sim.setScene(id)
                 sceneId = id
@@ -312,6 +326,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app), RunUi, RoomListene
                     exposure = it.exposureLine()
                 }
                 manual?.reload()
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 notice = "Couldn't switch the scene: ${e.message}"
             } finally {
@@ -326,7 +342,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app), RunUi, RoomListene
         this.demo = demo
         exposure = t.exposureLine()
         recreateRun()
-        manual = ManualCamera(t, viewModelScope, onExposure = { exposure = it }, onNotice = { notice = it })
+        // Nothing from a camera that has since been replaced.
+        manual = ManualCamera(t, cameraScope, onExposure = { if (tools === t) exposure = it }, onNotice = { if (tools === t) notice = it })
         camera = CameraStatus.Connected(if (demo) DEMO_CAMERA else t.describe(), if (demo) DEMO_CAMERA else t.modelName, t.lens)
     }
 
@@ -358,12 +375,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app), RunUi, RoomListene
         }
         run?.cancel()
         camera = CameraStatus.Connecting
-        viewModelScope.launch {
+        cameraScope.launch {
             try {
                 val address = CameraAddress(h, port.trim().toIntOrNull() ?: 8080, https, username, password)
                 val t = CameraTools(CcapiClient(CameraHttp.transport(address)), AndroidImageTools())
                 t.connect()
                 attach(t, demo = false)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 camera = CameraStatus.Failed(connectError(e, "$h:${port.trim().ifEmpty { "8080" }}"))
             }
@@ -371,15 +390,19 @@ class AppViewModel(app: Application) : AndroidViewModel(app), RunUi, RoomListene
     }
 
     fun disconnect() {
-        // Leaving demo mode: stop the simulator (it would keep running in the background).
-        if (demo) simulator?.close()
-        run?.cancel()
-        run = null
+        // A connection still being made, a scene switch, manual shots: all for the camera that's going.
+        cameraScope.cancel()
+        cameraScope = newCameraScope()
+        // Stop the simulator (it would keep running in the background); a demo still starting gives up too.
+        simulator?.close()
+        dropRun()
         tools = null
         manual = null
         inMain = false
         demo = false
         clearConversation()
+        hud = HudState()
+        pushHud()
         exposure = null
         camera = CameraStatus.Disconnected
     }
@@ -472,10 +495,26 @@ class AppViewModel(app: Application) : AndroidViewModel(app), RunUi, RoomListene
         busy = true
     }
 
+    /**
+     * Cancels the current run and forgets it. Its last reports (the cancel,
+     * the end) are dropped, so what they would have reset is reset here.
+     */
+    private fun dropRun() {
+        run?.cancel()
+        run = null
+        busy = false
+        status = ""
+        question = null
+        approval = null
+    }
+
     /** A fresh run picks up the current toggles (ask before shooting, max shots). */
     private fun recreateRun() {
+        dropRun()
         val t = tools ?: return
-        run = AgentRun(worker, t, this, RunOptions(maxShots, askBeforeShooting, { glassesOnline > 0 }, session, presetStore), viewModelScope)
+        val ui = RunCallbacks()
+        run = AgentRun(worker, t, ui, RunOptions(maxShots, askBeforeShooting, { glassesOnline > 0 }, session, presetStore), viewModelScope)
+            .also { ui.owner = it }
     }
 
     /** Sends the goal box: a new goal when idle, a correction while working or after a finished run. */
@@ -542,7 +581,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app), RunUi, RoomListene
     val started: Boolean get() = steps.any { it.kind == StepKind.GOAL }
 
     fun newGoal() {
-        run?.cancel()
         clearConversation()
         hud = HudState()
         pushHud()
@@ -571,112 +609,132 @@ class AppViewModel(app: Application) : AndroidViewModel(app), RunUi, RoomListene
 
     // ---------------------------------------------------------------- RunUi
 
-    override fun step(entry: StepEntry) {
-        steps.add(entry)
-        if (entry.kind == StepKind.SETTINGS && entry.detail.isNotEmpty()) settingsTouched = true
-        if (entry.kind == StepKind.LOOK && beforeView == null && !settingsTouched) {
-            entry.image?.let(::decodeDataUrl)?.let { beforeView = ShotThumb(0, it, "Camera's settings") }
-        }
-        busy = run?.busy ?: false
-        when (entry.kind) {
-            StepKind.TELL -> hud = hud.copy(message = entry.text)
-            StepKind.GOAL -> hud = hud.copy(goal = entry.text)
-            // The ideas stay on the lens to flip through until the next goal.
-            StepKind.IDEAS -> if (entry.ideas.isNotEmpty()) hud = hud.copy(ideas = entry.ideas)
-            else -> {}
-        }
-        // The menu path stays on the lens while its question is open, and goes with the next step.
-        hud = when (entry.kind) {
-            StepKind.GUIDE -> hud.copy(guide = HudGuide(entry.title.orEmpty(), entry.detail, entry.menu))
-            StepKind.ASK, StepKind.ANSWER -> hud
-            else -> hud.copy(guide = null)
-        }
-        pushHud()
-    }
+    /**
+     * The screen side of one run. A replaced run (a new goal, a scene switch,
+     * another camera) is cancelled but still unwinds for a moment; what it
+     * reports then is dropped, so it can't land in the next conversation.
+     */
+    private inner class RunCallbacks : RunUi {
+        lateinit var owner: AgentRun
+        private val live: Boolean get() = run === owner
 
-    override fun status(text: String) {
-        status = text
-        busy = run?.busy ?: false
-        hud = hud.copy(step = text.ifEmpty { hud.step }, phase = if (text.isNotEmpty()) "working" else hud.phase)
-        pushHud()
-    }
-
-    override fun shot(result: ShotResult) {
-        val bmp = decodeDataUrl(result.thumb)
-        if (bmp != null) {
-            val t = ShotThumb(result.n, bmp, result.exposure)
-            if (firstShot == null) firstShot = t
-            lastShot = t
-        }
-        hud = hud.copy(thumb = result.thumb, shotsTaken = result.n, shotsMax = run?.shotBudget ?: maxShots)
-        pushHud()
-    }
-
-    override fun exposure(line: String, diff: List<String>) {
-        exposure = line
-        hud = hud.copy(exposure = line, diff = if (diff.isNotEmpty()) diff else hud.diff)
-        pushHud()
-    }
-
-    override suspend fun confirmShot(n: Int, reason: String): Boolean {
-        val d = CompletableDeferred<Boolean>()
-        approval = ShotApproval(n, reason, d)
-        hud = hud.copy(phase = "asking", question = "Take shot $n?", options = listOf("Shoot", "Skip"))
-        pushHud()
-        return try {
-            d.await()
-        } finally {
-            approval = null
-            hud = hud.copy(phase = "working", question = null, options = emptyList())
+        override fun step(entry: StepEntry) {
+            if (!live) return
+            steps.add(entry)
+            if (entry.kind == StepKind.SETTINGS && entry.detail.isNotEmpty()) settingsTouched = true
+            if (entry.kind == StepKind.LOOK && beforeView == null && !settingsTouched) {
+                entry.image?.let { beforeView = ShotThumb(0, it, "Camera's settings") }
+            }
+            busy = owner.busy
+            when (entry.kind) {
+                StepKind.TELL -> hud = hud.copy(message = entry.text)
+                StepKind.GOAL -> hud = hud.copy(goal = entry.text)
+                // The ideas stay on the lens to flip through until the next goal.
+                StepKind.IDEAS -> if (entry.ideas.isNotEmpty()) hud = hud.copy(ideas = entry.ideas)
+                else -> {}
+            }
+            // The menu path stays on the lens while its question is open, and goes with the next step.
+            hud = when (entry.kind) {
+                StepKind.GUIDE -> hud.copy(guide = HudGuide(entry.title.orEmpty(), entry.detail, entry.menu))
+                StepKind.ASK, StepKind.ANSWER -> hud
+                else -> hud.copy(guide = null)
+            }
             pushHud()
         }
-    }
 
-    override suspend fun ask(question: String, options: List<String>): String {
-        val d = CompletableDeferred<String>()
-        this.question = Question(question, options, d)
-        hud = hud.copy(phase = "asking", question = question, options = options)
-        pushHud()
-        return try {
-            d.await()
-        } finally {
-            this.question = null
-            hud = hud.copy(phase = "working", question = null, options = emptyList())
+        override fun status(text: String) {
+            if (!live) return
+            status = text
+            busy = owner.busy
+            hud = hud.copy(step = text.ifEmpty { hud.step }, phase = if (text.isNotEmpty()) "working" else hud.phase)
             pushHud()
         }
-    }
 
-    override suspend fun handSet(setting: String, value: String) {
-        // Only the demo camera learns it this way; a real camera has it set already.
-        val s = simulator?.takeIf { demo } ?: return
-        try {
-            s.menu(setting, value)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (_: Exception) {
-            // an older simulator without menu settings: nothing changes in the picture
+        override fun shot(result: ShotResult) {
+            if (!live) return
+            if (result.thumb.isNotEmpty()) {
+                val t = ShotThumb(result.n, result.thumb, result.exposure)
+                if (firstShot == null) firstShot = t
+                lastShot = t
+            }
+            hud = hud.copy(thumb = result.thumb, shotsTaken = result.n, shotsMax = owner.shotBudget)
+            pushHud()
         }
-    }
 
-    override fun ended(outcome: Outcome, summary: String?, lens: String?) {
-        busy = false
-        status = ""
-        hud = hud.copy(
-            phase = when (outcome) {
-                Outcome.DONE -> "done"
-                Outcome.CANCELLED -> "idle"
-                Outcome.ERROR -> "error"
-            },
-            step = when (outcome) {
-                Outcome.DONE -> "Done"
-                Outcome.CANCELLED -> "Cancelled"
-                Outcome.ERROR -> steps.lastOrNull()?.text ?: "Error"
-            },
-            summary = lens ?: hud.summary,
-            question = null,
-            options = emptyList(),
-        )
-        pushHud()
+        override fun exposure(line: String, diff: List<String>) {
+            if (!live) return
+            exposure = line
+            hud = hud.copy(exposure = line, diff = if (diff.isNotEmpty()) diff else hud.diff)
+            pushHud()
+        }
+
+        override suspend fun confirmShot(n: Int, reason: String): Boolean {
+            if (!live) return false
+            val a = ShotApproval(n, reason, CompletableDeferred())
+            approval = a
+            hud = hud.copy(phase = "asking", question = "Take shot $n?", options = listOf("Shoot", "Skip"))
+            pushHud()
+            return try {
+                a.answer.await()
+            } finally {
+                if (approval === a) approval = null
+                if (live) {
+                    hud = hud.copy(phase = "working", question = null, options = emptyList())
+                    pushHud()
+                }
+            }
+        }
+
+        override suspend fun ask(question: String, options: List<String>): String {
+            if (!live) throw CancellationException("The run was replaced")
+            val q = Question(question, options, CompletableDeferred())
+            this@AppViewModel.question = q
+            hud = hud.copy(phase = "asking", question = question, options = options)
+            pushHud()
+            return try {
+                q.answer.await()
+            } finally {
+                if (this@AppViewModel.question === q) this@AppViewModel.question = null
+                if (live) {
+                    hud = hud.copy(phase = "working", question = null, options = emptyList())
+                    pushHud()
+                }
+            }
+        }
+
+        override suspend fun handSet(setting: String, value: String) {
+            // Only the demo camera learns it this way; a real camera has it set already.
+            val s = simulator?.takeIf { demo && live } ?: return
+            try {
+                s.menu(setting, value)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                // an older simulator without menu settings: nothing changes in the picture
+            }
+        }
+
+        override fun ended(outcome: Outcome, summary: String?, lens: String?) {
+            if (!live) return
+            busy = false
+            status = ""
+            hud = hud.copy(
+                phase = when (outcome) {
+                    Outcome.DONE -> "done"
+                    Outcome.CANCELLED -> "idle"
+                    Outcome.ERROR -> "error"
+                },
+                step = when (outcome) {
+                    Outcome.DONE -> "Done"
+                    Outcome.CANCELLED -> "Cancelled"
+                    Outcome.ERROR -> steps.lastOrNull()?.text ?: "Error"
+                },
+                summary = lens ?: hud.summary,
+                question = null,
+                options = emptyList(),
+            )
+            pushHud()
+        }
     }
 
     // ---------------------------------------------------------------- voice
@@ -752,6 +810,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app), RunUi, RoomListene
                 glassesSession = true
                 // Ask for a pattern once the socket is up.
                 pendingPair = true
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 notice = "Couldn't start a glasses session: ${e.message}"
                 showGlasses = false
@@ -787,9 +847,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app), RunUi, RoomListene
 
     override fun onGone() {
         viewModelScope.launch {
-            // The room expired on the server: drop it, so "Connect glasses" makes a fresh one.
+            // The room expired on the server: drop it, so the glasses button makes a fresh one.
             room?.stop()
             room = null
+            // An open pairing sheet would otherwise wait for a session that isn't coming.
+            showGlasses = false
             glassesSession = false
             glassesOnline = 0
             pendingPair = false
@@ -816,7 +878,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app), RunUi, RoomListene
     override fun onCleared() {
         SessionService.hide(getApplication())
         run?.cancel()
-        manual = null
         simulator?.close()
         CameraWifi.leave(getApplication())
         room?.stop()
@@ -844,11 +905,4 @@ fun connectError(e: Exception, where: String): String {
         cause = cause.cause
     }
     return "Couldn't connect: ${e.message ?: e.javaClass.simpleName}"
-}
-
-fun decodeDataUrl(url: String): Bitmap? = try {
-    val bytes = Base64.decode(url.substringAfter(","), Base64.DEFAULT)
-    BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-} catch (_: Exception) {
-    null
 }

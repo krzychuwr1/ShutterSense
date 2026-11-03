@@ -66,7 +66,7 @@ export class RoomConn {
   send(msg: ClientMessage) {
     if (this.mode === "ws") {
       if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(msg));
-      else this.outbox.push(msg);
+      else this.queue(msg);
       return;
     }
     fetch(`/api/rooms/${this.code}/send?${this.query}`, {
@@ -74,9 +74,19 @@ export class RoomConn {
       headers: { "content-type": "application/json" },
       body: JSON.stringify(msg),
     }).then(
-      (res) => res.status >= 500 && this.outbox.push(msg),
-      () => this.outbox.push(msg),
+      (res) => res.status >= 500 && this.queue(msg),
+      () => this.queue(msg),
     );
+  }
+
+  /**
+   * Keeps a message for when the link is back. Each HUD is a full snapshot, so
+   * only the latest is kept: a backlog of them would also run into the room's
+   * HUD rate limit, which drops the newest.
+   */
+  private queue(msg: ClientMessage) {
+    if (msg.t !== "say") this.outbox = this.outbox.filter((m) => m.t !== msg.t);
+    this.outbox.push(msg);
   }
 
   private connect() {
@@ -195,6 +205,8 @@ export class RoomConn {
     this.reconnectTimer = setTimeout(async () => {
       // After a few failures in a row, check that the session still exists.
       if (this.retry >= 3 && this.onGone && !(await roomExists(this.code).catch(() => true))) {
+        // Closed while checking (e.g. paired again): the new connection owns onGone's state now.
+        if (this.closed) return;
         this.close();
         return this.onGone();
       }

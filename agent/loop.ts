@@ -140,12 +140,17 @@ export class AgentRun {
     return this.maxShots;
   }
 
-  /** Starts a new goal, after a run that is still winding down (cancel it first) has ended. */
+  /**
+   * Starts a new goal, after a run that is still winding down (cancel it
+   * first) has ended. Cancelling while it waits cancels this start too.
+   */
   async start(goal: string) {
     if (this.running) {
       this.cancel();
+      const waiting = (this.abort = new AbortController());
       await this.finished;
-      if (this.running) return; // another start got in first
+      // Cancelled meanwhile, or another start got in first.
+      if (waiting.signal.aborted || this.running) return;
     }
     this.goal = goal.trim();
     this.input = [{ role: "user", content: [{ type: "input_text", text: `Goal: ${this.goal}` }] }];
@@ -162,6 +167,12 @@ export class AgentRun {
     const t = text.trim();
     if (!t) return;
     this.ui.step({ kind: "instruction", text: t });
+    if (this.running && this.abort.signal.aborted) {
+      // Cancelled but still finishing a camera call: the correction is a follow-up once it has ended.
+      const waiting = (this.abort = new AbortController());
+      await this.finished;
+      if (waiting.signal.aborted) return;
+    }
     if (this.running) {
       this.pending.push(t);
       return;
@@ -296,8 +307,10 @@ export class AgentRun {
           return { output: t };
         }
         case "focus": {
-          const x = Number(args.x);
-          const y = Number(args.y);
+          // Number(null), Number("") and Number(true) are numbers too; only real numbers count.
+          const coord = (v: unknown) => (typeof v === "number" ? v : typeof v === "string" && v.trim() ? Number(v) : NaN);
+          const x = coord(args.x);
+          const y = coord(args.y);
           if (!Number.isFinite(x) || !Number.isFinite(y)) return { output: "ERROR: x and y must be numbers from 0 to 1." };
           this.ui.status("Moving the AF point…");
           const { applied, text: t } = await this.camera.focusAt(x, y);
