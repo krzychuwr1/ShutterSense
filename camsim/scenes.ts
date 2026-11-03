@@ -207,7 +207,7 @@ const SPECS: Record<string, SceneSpec> = {
     id: "concert",
     title: "Club gig under LED lights",
     blurb: "A small club stage lit by dimmed LED panels. Silent shutter at 1/800: dark stripes run across every frame.",
-    goals: ["Shoot silently, but get rid of the dark stripes", "Sharp singer at a fast shutter speed, no banding", "Singer sharp, band softly blurred behind"],
+    goals: ["Shoot silently, but get rid of the dark stripes", "Sharp singer at a fast shutter speed, no banding", "Singer sharp, band softly blurred behind", "Freeze the singer with flash, no stripes on her"],
     layers: [
       { name: "stage", file: "scenes/concert/plate.jpg", depth: 12, ev: 8.5, kelvin: 5200, highlights: { knee: 0.8, gain: 25, box: [0, 0, 1, 0.75] }, flicker: { light: STAGE_LEDS } },
       { name: "band", file: "scenes/concert/band.png", depth: 10, ev: 8.7, kelvin: 5200, flicker: { light: STAGE_LEDS } },
@@ -257,7 +257,7 @@ const SPECS: Record<string, SceneSpec> = {
     id: "shade",
     title: "Portrait in deep shade, sunlit meadow",
     blurb: "Midday sun, your friend in the tree's shade. Expose for her face and the meadow burns out; expose for the meadow and she goes dark.",
-    goals: ["Natural light, no flash: keep her face and the sunny meadow", "Nothing blown out, nothing too dark", "Bright, natural portrait with the green meadow behind"],
+    goals: ["Natural light, no flash: keep her face and the sunny meadow", "Nothing blown out, nothing too dark", "Bright, natural portrait with the green meadow behind", "Fill her face with flash, background soft at f/1.4"],
     layers: [
       {
         name: "park", file: "scenes/group/plate.jpg", depth: 30, ground: { horizon: 0.322, k: 2.18, far: 30 },

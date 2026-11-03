@@ -250,11 +250,18 @@ function resolveValue(setting: Setting, value: string): string[] | null {
   if (!v) return null;
   const opts = setting.options.map((o) => (typeof o === "string" ? { label: o, node: undefined } : { label: o.name, node: o }));
   const codes = "codes" in setting ? (setting.codes ?? []) : [];
-  const num = (s: string) => (/^[+-]?\d+(\.\d+)?$/.test(s.replace(/\s/g, "")) ? Number(s.replace(/\s/g, "")) : NaN);
+  // Numbers, with thirds as the camera writes them: "+1", "-0.7", "-2/3", "+1 1/3", "+1⅓ EV".
+  const num = (s: string) => {
+    const m = s.replace(/[\s_]|ev$/gi, "").replace(/[−–]/g, "-").match(/^([+-]?)(\d+(?:\.\d+)?)?(⅓|⅔|1\/3|2\/3)?$/);
+    if (!m || (!m[2] && !m[3])) return NaN;
+    const n = Number(m[2] ?? 0) + (m[3] ? (m[3] === "⅓" || m[3] === "1/3" ? 1 / 3 : 2 / 3) : 0);
+    return m[1] === "-" ? -n : n;
+  };
   const same = (label: string, i: number) => {
+    // Numbers by value: written as text, "-1⅔" and "-1" would both read "1".
+    if (!Number.isNaN(num(value)) && !Number.isNaN(num(label))) return Math.abs(num(value) - num(label)) < 0.01;
     const l = norm(label);
     if (l === v || (codes[i] && norm(codes[i]) === v)) return true;
-    if (!Number.isNaN(num(value)) && num(value) === num(label)) return true;
     return (ON.includes(v) && ON.includes(l)) || (OFF.includes(v) && OFF.includes(l));
   };
   for (const [i, o] of opts.entries()) if (same(o.label, i)) return [o.label];

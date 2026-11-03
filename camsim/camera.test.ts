@@ -172,6 +172,38 @@ test("HDR Mode, set by hand, lifts the face in the shade and keeps the sunlit me
   assert.deepEqual(c.status().menu, {});
 });
 
+test("high-speed sync lets the flash fill a face in the sun wide open; flash compensation sets its power", async () => {
+  const c = await cam("shade");
+  const face: [number, number, number, number] = [0.17, 0.15, 0.26, 0.3];
+  const meadow: [number, number, number, number] = [0.45, 0.35, 0.95, 0.42];
+  await setMode(c, "m");
+  await put(c, "av", "f2.8");
+  await put(c, "tv", "1/8000");
+  await put(c, "iso", "100");
+  const [ambient] = await shoot(c);
+  assert.equal((await put(c, "flash", "on")).status, 200);
+  // Normal sync: the flash pulls the shutter down to 1/200 s and the meadow burns out.
+  const [synced] = await shoot(c);
+  assert.equal(synced.exposure.tv, "1/200");
+  assert.ok(meanLum(await fileBytes(c, synced.path), meadow) > 245);
+  // High-speed sync keeps 1/8000 s.
+  assert.ok(c.handSet("Shutter sync.", "High-speed"));
+  const [hss] = await shoot(c);
+  assert.equal(hss.exposure.tv, "1/8000");
+  const lum = async (s: { path: string }) => ({ face: meanLum(await fileBytes(c, s.path), face), meadow: meanLum(await fileBytes(c, s.path), meadow) });
+  const [a, b] = [await lum(ambient), await lum(hss)];
+  assert.ok(b.face > a.face + 30, `face ${a.face.toFixed(0)} -> ${b.face.toFixed(0)} with flash`);
+  assert.ok(Math.abs(b.meadow - a.meadow) < 5 && b.meadow < 240, `meadow ${a.meadow.toFixed(0)} -> ${b.meadow.toFixed(0)}`);
+  // Flash exposure compensation moves the flash, not the ambient.
+  assert.ok(c.handSet("Flash exp. comp", "-1⅔"));
+  const less = await lum((await shoot(c))[0]);
+  assert.ok(less.face < b.face - 10, `face ${b.face.toFixed(0)} -> ${less.face.toFixed(0)} at -1⅔`);
+  assert.ok(Math.abs(less.meadow - b.meadow) < 5);
+  // Back to 1st-curtain sync: the cap returns.
+  assert.ok(c.handSet("Shutter sync.", "1st curtain"));
+  assert.equal(c.solve(0, { flash: "fill" }).tv, "1/200");
+});
+
 test("the aspect ratio crops the recorded image", async () => {
   const c = await cam("group");
   assert.equal((await put(c, "stillimageaspectratio", "16:9")).status, 200);
@@ -481,23 +513,25 @@ test("the contents API pages by 100, counts, filters and streams chunks", () => 
 // ------------------------------------------------------------------ flicker and group depth of field
 
 /** Mean luminance of each row of a JPEG, averaged across the width. */
-function rowMeans(bytes: Uint8Array): number[] {
+/** Mean luminance of each row, within a normalised box (the whole frame by default). */
+function rowMeans(bytes: Uint8Array, box: [number, number, number, number] = [0, 0, 1, 1]): number[] {
   const img = decode(bytes);
   const out: number[] = [];
-  for (let y = 0; y < img.height; y++) {
+  const [x0, x1] = [Math.floor(box[0] * img.width), Math.floor(box[2] * img.width)];
+  for (let y = Math.floor(box[1] * img.height); y < box[3] * img.height; y++) {
     let sum = 0;
-    for (let x = 0; x < img.width; x++) {
+    for (let x = x0; x < x1; x++) {
       const i = (y * img.width + x) * 4;
       sum += 0.2126 * img.data[i] + 0.7152 * img.data[i + 1] + 0.0722 * img.data[i + 2];
     }
-    out.push(sum / img.width);
+    out.push(sum / (x1 - x0));
   }
   return out;
 }
 
 /** How much two shots of the same scene differ row by row (bands that moved), relative to their brightness. */
-function bandDiff(a: Uint8Array, b: Uint8Array): number {
-  const ra = rowMeans(a), rb = rowMeans(b);
+function bandDiff(a: Uint8Array, b: Uint8Array, box?: [number, number, number, number]): number {
+  const ra = rowMeans(a, box), rb = rowMeans(b, box);
   let diff = 0, sum = 0;
   for (let y = 0; y < ra.length; y++) {
     diff += Math.abs(ra[y] - rb[y]);
@@ -561,6 +595,32 @@ test("LED stage lights band the electronic shutter until the HF anti-flicker spe
   assert.notEqual(c.status().settings.hfflickertv, det.tv);
   const off = await pair();
   assert.ok(off.d > clean.d * 2, `bands again at ${off.tv}, diff ${off.d.toFixed(3)} vs ${clean.d.toFixed(3)}`);
+});
+
+test("a flash that dominates the singer keeps LED bands off her", async () => {
+  const c = await cam("concert");
+  const singer: [number, number, number, number] = [0.43, 0.2, 0.57, 0.9];
+  // Flash needs the mechanical shutter, and high-speed sync above 1/200 s.
+  await put(c, "shuttermode", "mechanical", "ver110");
+  await put(c, "drive", "single");
+  await setMode(c, "m");
+  await put(c, "tv", "1/2000");
+  await put(c, "av", "f2.8");
+  await put(c, "iso", "1600");
+  const pair = async () => {
+    const [a] = await shoot(c);
+    const [b] = await shoot(c);
+    return { a, d: bandDiff(await fileBytes(c, a.path), await fileBytes(c, b.path), singer) };
+  };
+  const ambient = await pair();
+  assert.ok(ambient.d > 0.04, `LED bands on the singer at 1/2000 s, diff ${ambient.d.toFixed(3)}`);
+  assert.equal((await put(c, "flash", "on")).status, 200);
+  assert.ok(c.handSet("Shutter sync.", "High-speed"));
+  assert.ok(c.handSet("Flash exp. comp", "+1"));
+  assert.deepEqual(c.status().menu, { "High-speed sync": "On", "Flash exp. comp.": "+1 EV" });
+  const flash = await pair();
+  assert.ok(flash.a.flash && flash.a.exposure.tv === "1/2000", `flash at ${flash.a.exposure.tv}`);
+  assert.ok(flash.d < ambient.d / 2, `bands with flash ${flash.d.toFixed(3)} vs ${ambient.d.toFixed(3)} without`);
 });
 
 test("flicker detection reports what lights each scene", async () => {

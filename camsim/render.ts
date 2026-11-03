@@ -302,27 +302,31 @@ export function composite(scene: Scene, o: CompositeOpts): { rgb: Float32Array; 
       buf[i * 4 + 2] = l.rgb[i * 3 + 2];
       buf[i * 4 + 3] = l.a[i];
     }
-    if (o.flash && o.flash.gn > 0 && o.t > 0) addFlash(buf, sl, w, h, factor, o.flash.gn, o.t);
+    const flash = o.flash && o.flash.gn > 0 && o.t > 0 ? flashGains(sl, h, factor, o.flash.gn, o.t) : null;
+    // The flash-lit picture of a moving layer: the burst is too short to smear it.
+    let still: Float32Array | null = null;
     if (blur) {
       // Blur circle for the nearest of the focus distances (just one unless stacking).
       const coc = (d: number) => Math.min(...focuses.map((f) => blurCircleMm(scene.lens.focal, o.dofN, f, d)));
       const sigma = (d: number) => ((coc(d) / SENSOR_W) * w) / 2.6;
       if (sl.ground) gaussianByRow(buf, w, h, Float32Array.from({ length: h }, (_, y) => sigma(depthAt(sl, (y + 0.5) / h))));
       else gaussian(buf, w, h, sigma(sl.depth));
-      if (o.motionBlur && sl.motion) smear(buf, w, h, (sl.motion.speed / factor) * o.t);
+      if (o.motionBlur && sl.motion) {
+        if (flash) still = buf.slice();
+        smear(buf, w, h, (sl.motion.speed / factor) * o.t);
+      }
     }
-    // Flicker acts on the image as it falls on the sensor: row by row, after the lens blur.
-    if (o.flicker && sl.flicker && o.t > 0) {
-      const g = rowGains(sl.flicker.light, o.flicker, o.t, h);
-      const share = sl.flicker.share;
+    // Flicker acts on the ambient light as it falls on the sensor: row by row,
+    // after the lens blur. The flash adds its own light on top, which doesn't flicker.
+    const flicker = o.flicker && sl.flicker && o.t > 0 ? rowGains(sl.flicker.light, o.flicker, o.t, h) : null;
+    if (flicker || flash) {
+      const share = sl.flicker?.share ?? 0;
+      const lit = still ?? buf;
       for (let y = 0; y < h; y++) {
-        const kr = 1 - share + share * g[y * 3];
-        const kg = 1 - share + share * g[y * 3 + 1];
-        const kb = 1 - share + share * g[y * 3 + 2];
-        for (let i = y * w * 4; i < (y + 1) * w * 4; i += 4) {
-          buf[i] *= kr;
-          buf[i + 1] *= kg;
-          buf[i + 2] *= kb;
+        for (let c = 0; c < 3; c++) {
+          const k = flicker ? 1 - share + share * flicker[y * 3 + c] : 1;
+          const f = flash ? flash[y * 3 + c] : 0;
+          for (let i = y * w * 4 + c; i < (y + 1) * w * 4; i += 4) buf[i] = buf[i] * k + lit[i] * f;
         }
       }
     }
@@ -337,27 +341,22 @@ export function composite(scene: Scene, o: CompositeOpts): { rgb: Float32Array; 
 }
 
 /**
- * Adds flash light to a layer. The light reaching a surface falls off with
- * the square of its distance; a surface reflects it in its own colour, which
- * is recovered from the layer's ambient lighting. Expressed as radiance over
- * the exposure time so the normal exposure maths applies: a mid-grey at
- * distance gn / N comes out mid-grey, as a guide number promises.
+ * Flash light on a layer, per row and channel, as a multiple of its ambient
+ * radiance. The light reaching a surface falls off with the square of its
+ * distance; a surface reflects it in its own colour, which is recovered from
+ * the layer's ambient lighting. Expressed as radiance over the exposure time
+ * so the normal exposure maths applies: a mid-grey at distance gn / N comes
+ * out mid-grey, as a guide number promises.
  */
-function addFlash(buf: Float32Array, sl: SceneLayer, w: number, h: number, factor: number, gn: number, t: number) {
+function flashGains(sl: SceneLayer, h: number, factor: number, gn: number, t: number): Float32Array {
+  const out = new Float32Array(h * 3);
   for (let y = 0; y < h; y++) {
     const sy = Math.min(sl.light.length - 1, Math.floor((y + 0.5) * factor));
     const d = Math.max(0.3, depthAt(sl, (y + 0.5) / h));
     const k = (gn / d) ** 2 / t / sl.light[sy];
-    const kr = (k * FLASH_RGB[0]) / sl.tint[0];
-    const kg = (k * FLASH_RGB[1]) / sl.tint[1];
-    const kb = (k * FLASH_RGB[2]) / sl.tint[2];
-    for (let x = 0; x < w; x++) {
-      const i = (y * w + x) * 4;
-      buf[i] += buf[i] * kr;
-      buf[i + 1] += buf[i + 1] * kg;
-      buf[i + 2] += buf[i + 2] * kb;
-    }
+    for (let c = 0; c < 3; c++) out[y * 3 + c] = (k * FLASH_RGB[c]) / sl.tint[c];
   }
+  return out;
 }
 
 // ------------------------------------------------------------------ picture styles

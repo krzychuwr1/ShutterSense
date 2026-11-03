@@ -130,6 +130,20 @@ const SHAKE = 2.5;
 /** Speedlite on the hot shoe: guide number in metres at ISO 100, and flash sync speed. */
 const GUIDE_NUMBER = 60;
 const SYNC = 1 / 200;
+/**
+ * High-speed sync pulses the flash for the whole curtain travel, so the frame
+ * gets only a slice of it: half the power at the sync speed, and one stop less
+ * for each stop faster.
+ */
+const hssPower = (t: number) => Math.min(1, (0.5 * t) / SYNC);
+
+/** "+1", "-2/3", "+1 1/3", "+1⅓ EV", "-0.7" in stops; null if it isn't a number of stops. */
+function stopsOf(v: string): number | null {
+  const m = v.replace(/[−–]/g, "-").replace(/\s*(ev|stops?)$/, "").trim().match(/^([+-]?)(\d+(?:\.\d+)?)?(?:[ _]?(⅓|⅔|1\/3|2\/3))?$/);
+  if (!m || (!m[2] && !m[3])) return null;
+  const n = Number(m[2] ?? 0) + (m[3] === "⅓" || m[3] === "1/3" ? 1 / 3 : m[3] ? 2 / 3 : 0);
+  return m[1] === "-" ? -n : n;
+}
 /** Sensor readout with the fully electronic shutter (rolling shutter). */
 const READOUT = 1 / 60;
 /** Time the mechanical shutter's slit (or the electronic first curtain) takes to cross the frame. */
@@ -202,6 +216,10 @@ export class VirtualCamera {
   private hfResult = false;
   /** HDR Mode, set by hand in the menus (the control API can't): null when off. */
   private hdr: "auto" | number | null = null;
+  /** High-speed sync, set on the flash or in the camera's flash menu (the control API can't). */
+  private hss = false;
+  /** Flash exposure compensation in stops, likewise only in the menus. */
+  private fec = 0;
   private movie = false;
   private recording: Recording | null = null;
   /** Busy = the camera can't take another picture yet; shooting = frames are still being exposed. */
@@ -279,6 +297,8 @@ export class VirtualCamera {
     this.customWb = null;
     this.hfResult = false;
     this.hdr = null;
+    this.hss = false;
+    this.fec = 0;
     this.movie = false;
     if (this.recording) this.recording.stop = true;
     this.recording = null;
@@ -291,18 +311,29 @@ export class VirtualCamera {
   /**
    * The photographer changes a menu setting on the body by hand, one the
    * control API can't reach (the demo calls this when they confirm a
-   * menu_steps guide). Only HDR Mode changes the pictures; false for
-   * anything else.
+   * menu_steps guide). Only HDR Mode, high-speed sync and flash exposure
+   * compensation change the pictures; false for anything else.
    */
   handSet(setting: string, value: string): boolean {
     const name = setting.toLowerCase();
-    if (!/hdr|dyn(amic)?\.? ?range/.test(name)) return false;
     const v = value.toLowerCase().trim();
-    const stops = v.match(/([123])\s*ev/);
-    if (/disable|^off$/.test(v)) this.hdr = null;
-    else if (v === "auto") this.hdr = "auto";
-    else if (stops) this.hdr = Number(stops[1]);
-    else return false;
+    const off = /disable|^off$/.test(v);
+    if (/shutter sync|high.?speed|\bhss\b|\bfp\b/.test(name)) {
+      // 1st or 2nd curtain: normal sync.
+      if (off || /curtain|first|second|rear|front/.test(v)) this.hss = false;
+      else if (/enable|^on$|high.?speed|\bhss\b/.test(v)) this.hss = true;
+      else return false;
+    } else if (/flash (exp|comp)|\bfec\b/.test(name)) {
+      const stops = off ? 0 : stopsOf(v);
+      if (stops === null) return false;
+      this.fec = Math.min(3, Math.max(-3, stops));
+    } else if (/hdr|dyn(amic)?\.? ?range/.test(name)) {
+      const stops = v.match(/([123])\s*ev/);
+      if (off) this.hdr = null;
+      else if (v === "auto") this.hdr = "auto";
+      else if (stops) this.hdr = Number(stops[1]);
+      else return false;
+    } else return false;
     this.wake();
     return true;
   }
@@ -330,7 +361,11 @@ export class VirtualCamera {
       recording: !!this.recording,
       offline: this.offline,
       card: { files: this.card.files.length, free: this.card.free() },
-      menu: this.hdr === null ? {} : { "HDR Mode": this.hdr === "auto" ? "Auto" : `±${this.hdr} EV` },
+      menu: {
+        ...(this.hdr === null ? {} : { "HDR Mode": this.hdr === "auto" ? "Auto" : `±${this.hdr} EV` }),
+        ...(this.hss ? { "High-speed sync": "On" } : {}),
+        ...(this.fec ? { "Flash exp. comp.": `${this.fec > 0 ? "+" : ""}${Number(this.fec.toFixed(1))} EV` } : {}),
+      },
     };
   }
 
@@ -410,6 +445,8 @@ export class VirtualCamera {
     const maxT = 30;
     const handheldT = 1 / Math.max(lens.focal, 30);
     const isoMax = o.flash ? FLASH_ISO_MAX : AUTO_ISO_MAX;
+    // The fastest shutter speed the flash works at: any, with high-speed sync.
+    const sync = this.hss ? minT : SYNC;
     const clampIso = (v: number) => Math.min(isoMax, Math.max(100, v));
     const isoFor = (n: number, t: number) => clampIso((n * n * 100) / (t * 2 ** target));
     const needT = (n: number, i: number) => (n * n * 100) / (i * 2 ** target);
@@ -419,7 +456,7 @@ export class VirtualCamera {
     let N = avNumber(String(this.settings.av)) ?? lens.maxAperture;
     let t = hf ?? tvSeconds(String(this.settings.tv)) ?? 1 / 125;
     // With flash, Tv and M shoot at the sync speed at most (and solve the rest for it).
-    if (o.flash && (mode === "tv" || mode === "m")) t = Math.max(t, SYNC);
+    if (o.flash && (mode === "tv" || mode === "m")) t = Math.max(t, sync);
     let iso = autoIso ? 100 : isoNumber(String(this.settings.iso)) ?? 100;
 
     switch (mode) {
@@ -465,9 +502,9 @@ export class VirtualCamera {
     // With flash the shutter can't be faster than the sync speed; in P, Av
     // and A+ it also stays at 1/60 or faster unless slow sync is chosen.
     if (o.flash && mode !== "bulb") {
-      if (mode === "tv" || mode === "m") t = Math.max(t, SYNC);
+      if (mode === "tv" || mode === "m") t = Math.max(t, sync);
       else {
-        t = Math.min(o.flash === "slow" ? maxT : 1 / 60, Math.max(SYNC, t));
+        t = Math.min(o.flash === "slow" ? maxT : 1 / 60, Math.max(sync, t));
         if (autoIso) iso = isoFor(N, t);
       }
     }
@@ -544,11 +581,13 @@ export class VirtualCamera {
 
   /**
    * E-TTL style power control: enough light to expose the subject at the
-   * focus distance about two thirds of a stop under, as fill.
+   * focus distance about two thirds of a stop under, as fill, moved by flash
+   * exposure compensation. High-speed sync scales its whole range down.
    */
   private flashGn(e: Exposure): number {
     const d = Math.max(0.3, this.focus);
-    const p = Math.min(1, Math.max(1 / 128, (0.63 * (d * e.N) ** 2 * 100) / (e.iso * GUIDE_NUMBER ** 2)));
+    const max = this.hss && e.t < SYNC ? hssPower(e.t) : 1;
+    const p = Math.min(max, Math.max(max / 128, (0.63 * 2 ** this.fec * (d * e.N) ** 2 * 100) / (e.iso * GUIDE_NUMBER ** 2)));
     return GUIDE_NUMBER * Math.sqrt(p);
   }
 
