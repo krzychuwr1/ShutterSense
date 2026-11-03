@@ -32,6 +32,7 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
@@ -127,6 +128,18 @@ class SimulatedCamera(context: Context) {
             val message = (json(res) as? JsonObject)?.str("message")
             throw IllegalArgumentException("Can't switch to scene \"$id\": ${message ?: "status ${res.status}"}")
         }
+    }
+
+    /**
+     * The photographer set a menu setting by hand ("HDR Mode" to "Auto"): the
+     * simulated camera applies it if it knows the setting. Returns whether it
+     * did. Starts the simulator if needed.
+     */
+    suspend fun menu(setting: String, value: String): Boolean {
+        start()
+        val res = call("POST", "/sim/menu", JsonObject(mapOf("setting" to JsonPrimitive(setting), "value" to JsonPrimitive(value))))
+        if (res.status != 200) return false
+        return ((json(res) as? JsonObject)?.get("applied") as? JsonPrimitive)?.booleanOrNull == true
     }
 
     /**

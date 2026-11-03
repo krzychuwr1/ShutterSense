@@ -1,9 +1,12 @@
 package dev.shuttersense.app.ccapi
 
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.channels.ProducerScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -205,6 +208,8 @@ class CcapiClient(private val transport: CcapiTransport) {
             val list = batteries()
             val b = list.firstOrNull { it.position == "camera" } ?: list.firstOrNull()
             if (b != null) return if (b.level.isNotEmpty() && b.level.all { it.isDigit() }) "${b.level}%" else b.level
+        } catch (e: CancellationException) {
+            throw e
         } catch (_: Exception) {
             // battery is informational only
         }
@@ -227,6 +232,8 @@ class CcapiClient(private val transport: CcapiTransport) {
         return try {
             val d = lensInfo()
             if (d.mount && d.name.isNotEmpty()) d.name else null
+        } catch (e: CancellationException) {
+            throw e
         } catch (_: Exception) {
             null
         }
@@ -367,6 +374,8 @@ class CcapiClient(private val transport: CcapiTransport) {
             if (cur == null || (cur.text ?: "") == "") {
                 try {
                     SettingItem.parse(callObject("GET", p))?.let { out[key] = it }
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (_: Exception) {
                     // not available in this state
                 }
@@ -487,27 +496,34 @@ class CcapiClient(private val transport: CcapiTransport) {
 
     // ---------------------------------------------------------------- shooting control
 
-    /** Full press and release, with or without autofocus. */
     /**
-     * One press of the shutter. A camera still writing a burst answers "Device
-     * busy"; that press is retried until the buffer clears (up to [busyWaitMs]).
+     * One press of the shutter, with or without autofocus. A camera still
+     * writing a burst answers "Device busy"; that press is retried until the
+     * buffer clears (up to [busyWaitMs]). Without the one-shot endpoint it is a
+     * full press and a release on the manual button, each retried on its own,
+     * so a busy release can't take a second picture. Cancelling stops the
+     * retries of a press that hasn't happened; once pressed, the release is
+     * always sent, so a burst or bulb can't stay held.
      */
     suspend fun shutter(af: Boolean, busyWaitMs: Long = 15_000) {
-        val until = System.currentTimeMillis() + busyWaitMs
+        val path = endpoint("shooting/control/shutterbutton", "post")
+        if (path != null) return whileBusy(busyWaitMs) { call("POST", path, body("af" to af)) }
+        val manual = need("shooting/control/shutterbutton/manual", "post")
+        whileBusy(busyWaitMs) { call("POST", manual, body("action" to "full_press", "af" to af)) }
+        withContext(NonCancellable) {
+            whileBusy(busyWaitMs) { call("POST", manual, body("action" to "release", "af" to false)) }
+        }
+    }
+
+    /** Runs [fn], again every 300 ms while the camera answers "Device busy", for up to [waitMs]. */
+    private suspend fun whileBusy(waitMs: Long, fn: suspend () -> Unit) {
+        val until = System.currentTimeMillis() + waitMs
         while (true) {
             try {
-                val path = endpoint("shooting/control/shutterbutton", "post")
-                if (path != null) {
-                    call("POST", path, body("af" to af))
-                    return
-                }
-                val manual = need("shooting/control/shutterbutton/manual", "post")
-                call("POST", manual, body("action" to "full_press", "af" to af))
-                call("POST", manual, body("action" to "release", "af" to false))
-                return
+                return fn()
             } catch (e: CcapiException) {
                 if (e.status != 503 || !e.message.orEmpty().contains("busy", ignoreCase = true) || System.currentTimeMillis() >= until) throw e
-                kotlinx.coroutines.delay(300)
+                delay(300)
             }
         }
     }
@@ -603,11 +619,7 @@ class CcapiClient(private val transport: CcapiTransport) {
     }
 
     /** A live-view frame and/or its incidental information ([kind] "image", "info" or "both"). */
-    suspend fun liveDetail(kind: String = "both"): LiveDetail {
-        val path = need("shooting/liveview/flipdetail", "get")
-        val bytes = liveRetry { call("GET", "$path?kind=$kind").body }
-        return detailFrames(parseRecords(bytes)).firstOrNull() ?: LiveDetail()
-    }
+    suspend fun liveDetail(kind: String = "both"): LiveDetail = liveDetailFrames(kind).firstOrNull() ?: LiveDetail()
 
     /** One live-view frame together with its incidental information, in whichever order the camera sends them. */
     suspend fun liveFrameWithInfo(): LiveDetail {

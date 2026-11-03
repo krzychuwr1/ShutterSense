@@ -22,7 +22,6 @@ import androidx.compose.foundation.gestures.snapping.SnapPosition
 import androidx.compose.foundation.gestures.snapping.rememberSnapFlingBehavior
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsDraggedAsState
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -293,6 +292,8 @@ private fun ValueStrip(dial: Dial, enabled: Boolean, onPick: (String) -> Unit) {
     val fling = rememberSnapFlingBehavior(list, SnapPosition.Center)
     val scope = rememberCoroutineScope()
     val dragged by list.interactionSource.collectIsDraggedAsState()
+    // The settle handler below outlives recompositions; it reads the current list (a mode change replaces it).
+    val currentOptions by rememberUpdatedState(options)
     val value by rememberUpdatedState(dial.value)
     val pick by rememberUpdatedState(onPick)
     var touched by remember { mutableStateOf(false) }
@@ -309,8 +310,11 @@ private fun ValueStrip(dial: Dial, enabled: Boolean, onPick: (String) -> Unit) {
         snapshotFlow { list.isScrollInProgress }.collect { scrolling ->
             if (!scrolling && touched) {
                 touched = false
-                val i = centred().coerceIn(0, options.lastIndex)
-                if (options[i] != value) pick(options[i])
+                val opts = currentOptions
+                if (opts.isNotEmpty()) {
+                    val i = centred().coerceIn(0, opts.lastIndex)
+                    if (opts[i] != value) pick(opts[i])
+                }
             }
         }
     }

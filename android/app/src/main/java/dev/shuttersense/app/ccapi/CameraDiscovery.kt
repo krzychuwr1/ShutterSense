@@ -1,8 +1,8 @@
 package dev.shuttersense.app.ccapi
 
-import dev.shuttersense.app.net.Networks
 import android.content.Context
 import android.net.wifi.WifiManager
+import dev.shuttersense.app.net.Networks
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.net.DatagramPacket
@@ -85,7 +85,8 @@ object CameraDiscovery {
 
     /** Reads a device description; null when it isn't a CCAPI camera. */
     private fun describe(location: String): FoundCamera? = try {
-        val c = URL(location).openConnection() as HttpURLConnection
+        // Over the Wi-Fi the answer came on: it may not be the default network (a camera's own access point).
+        val c = Networks.openOnWifi(URL(location)) as HttpURLConnection
         c.connectTimeout = 2000
         c.readTimeout = 2000
         val xml = try {

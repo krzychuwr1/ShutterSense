@@ -1,5 +1,6 @@
 package dev.shuttersense.app.ui.connect
 
+import androidx.compose.material.icons.automirrored.rounded.HelpOutline
 import dev.shuttersense.app.net.CameraWifi
 import androidx.compose.material.icons.rounded.Wifi
 import androidx.compose.animation.AnimatedContent
@@ -47,7 +48,6 @@ import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.ExpandMore
-import androidx.compose.material.icons.rounded.HelpOutline
 import androidx.compose.material.icons.rounded.PhotoCamera
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -115,7 +115,7 @@ fun ConnectScreen(vm: AppViewModel) {
             Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 RoundIcon(Icons.AutoMirrored.Rounded.ArrowBack, "Back", { vm.openChooser() }, Modifier.padding(end = 4.dp), tint = Palette.Text)
                 Text("Shutter Sense", style = MaterialTheme.typography.titleMedium, color = Palette.Text, modifier = Modifier.weight(1f))
-                RoundIcon(Icons.Rounded.HelpOutline, "How it works", { vm.openWelcome() }, tint = Palette.Muted)
+                RoundIcon(Icons.AutoMirrored.Rounded.HelpOutline, "How it works", { vm.openWelcome() }, tint = Palette.Muted)
             }
             Spacer(Modifier.height(40.dp))
             AnimatedContent(

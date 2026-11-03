@@ -4,7 +4,7 @@
 import type { SimStatus } from "../../camsim/camera.ts";
 import { evStops, prettyValue } from "../../shared/settings.ts";
 import { icon } from "./brand.ts";
-import { el } from "./dom.ts";
+import { el, lightbox } from "./dom.ts";
 import { blobUrl } from "./images.ts";
 import type { SimLink } from "./sim/link.ts";
 
@@ -34,6 +34,8 @@ export class CameraPanel {
   private shotThumbs = new Map<string, string>();
   private cardCount: HTMLElement;
   private lvUrl: string | null = null;
+  /** Scene switches, one at a time, so the camera ends on the scene picked last. */
+  private switching = Promise.resolve();
   private busy: HTMLElement;
   private scrollBtns: HTMLElement;
   private prevBtn: HTMLButtonElement;
@@ -117,20 +119,22 @@ export class CameraPanel {
           el("img", { src: `/scenes/${s.id}.jpg`, alt: "" }),
           el("span", { class: "scene-text" }, [el("strong", {}, [s.title]), el("span", {}, [s.blurb])]),
         ]);
-        b.addEventListener("click", () => void this.pick(s.id));
+        b.addEventListener("click", () => this.pick(s.id));
         return b;
       }),
     );
     this.updateScroll();
   }
 
-  private async pick(id: string) {
+  private pick(id: string) {
     if (id === this.scene) return;
     this.scene = id;
     this.renderScenes();
-    await this.link.request("POST", "/sim/scene", { id });
-    this.shotThumbs.clear();
-    this.onScene(id);
+    this.switching = this.switching.then(async () => {
+      if (id !== this.scene) return; // another pick came after this one
+      await this.link.request("POST", "/sim/scene", { id });
+      if (id === this.scene) this.onScene(id);
+    }).catch(console.error);
   }
 
   private async frameLoop() {
@@ -179,6 +183,7 @@ export class CameraPanel {
       ["af", `${AF[String(st.afoperation)] ?? st.afoperation} · ${st.afmethod}`],
       ["wb", `WB ${wb}`],
       ["style", String(st.picturestyle)],
+      ...Object.entries(s.menu ?? {}).map(([k, v]): [string, string] => ["hand", k === "HDR Mode" ? `HDR ${v === "Auto" ? "AUTO" : v}` : `${k} ${v}`]),
     ]);
     this.osd(this.osdBottom, [
       ["tv", prettyValue("tv", tv).replace(" s", "")],
@@ -213,19 +218,21 @@ export class CameraPanel {
   private async renderCard(s: SimStatus) {
     if (!s.shots.length) {
       if (this.shotThumbs.size || !this.card.querySelector(".card-empty")) this.card.replaceChildren(el("span", { class: "card-empty" }, ["No photos yet."]));
-      this.shotThumbs.clear();
+      this.dropThumbs();
       this.cardCount.textContent = "Empty";
       return;
     }
-    let added = false;
+    const before = this.shotThumbs.size;
+    this.dropThumbs(new Set(s.shots.map((shot) => shot.path)));
+    let changed = this.shotThumbs.size !== before;
     for (const shot of s.shots) {
       if (this.shotThumbs.has(shot.path)) continue;
       const res = await this.link.request("GET", `${shot.path}?kind=thumbnail`);
       if (!res.bytes) continue;
       this.shotThumbs.set(shot.path, blobUrl(res.bytes));
-      added = true;
+      changed = true;
     }
-    if (!added && this.card.childElementCount === s.shots.length) return;
+    if (!changed && this.card.childElementCount === s.shots.length) return;
     this.cardCount.textContent = s.shots.length === 1 ? "1 photo" : `${s.shots.length} photos`;
     this.card.replaceChildren(
       ...s.shots
@@ -242,13 +249,21 @@ export class CameraPanel {
     );
   }
 
+  /** Releases the thumbnails of photos no longer on the card (all of them by default). */
+  private dropThumbs(keep = new Set<string>()) {
+    for (const [path, url] of this.shotThumbs) {
+      if (keep.has(path)) continue;
+      URL.revokeObjectURL(url);
+      this.shotThumbs.delete(path);
+    }
+  }
+
   private async openShot(path: string) {
     let res = await this.link.request("GET", `${path}?kind=display`);
     // Small JPEGs have no display image: the photo itself is small enough.
     if (!res.bytes && /\.jpe?g$/i.test(path)) res = await this.link.request("GET", path);
     if (!res.bytes) return;
-    const box = el("div", { class: "lightbox", role: "dialog", "aria-label": "Photo" }, [el("img", { src: blobUrl(res.bytes), alt: "" })]);
-    box.addEventListener("click", () => box.remove());
-    document.body.append(box);
+    const url = blobUrl(res.bytes);
+    lightbox(url, () => URL.revokeObjectURL(url));
   }
 }

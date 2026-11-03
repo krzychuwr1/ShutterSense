@@ -7,13 +7,8 @@ const WIT_SYNTHESIZE = "https://api.wit.ai/synthesize?v=20240304";
 /** Longest line spoken; the lens never says more than a sentence or two. */
 export const MAX_SPEECH_CHARS = 220;
 
-export class VoiceError extends Error {
-  status: number;
-  constructor(status: number, message: string) {
-    super(message);
-    this.status = status;
-  }
-}
+/** A failure of the voice service, with a message that is safe to show. */
+export class VoiceError extends Error {}
 
 /** MP3 of `text` in `voice`, from the edge cache when the same line was said before. */
 export async function speak(token: string, voice: string, text: string, ctx: ExecutionContext): Promise<Response> {
@@ -25,8 +20,9 @@ export async function speak(token: string, voice: string, text: string, ctx: Exe
     method: "POST",
     headers: { authorization: `Bearer ${token}`, "content-type": "application/json", accept: "audio/mpeg" },
     body: JSON.stringify({ q: text, voice }),
+    signal: AbortSignal.timeout(20_000),
   });
-  if (!res.ok) throw new VoiceError(res.status, `Voice service answered ${res.status}`);
+  if (!res.ok) throw new VoiceError(`Voice service answered ${res.status}`);
   const audio = new Response(await res.arrayBuffer(), {
     headers: { "content-type": "audio/mpeg", "cache-control": "public, max-age=86400" },
   });

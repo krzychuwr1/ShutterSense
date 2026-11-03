@@ -8,12 +8,13 @@ the glasses. Kotlin, Jetpack Compose, OkHttp.
 | Package | What it does |
 | --- | --- |
 | `ccapi` | CCAPI client: discovery and per-version routing, settings with validation against the camera's options, mode dial override, live view, shutter, event polling, downloads, digest auth, HTTPS with the camera's self-signed certificate (trusted for the camera connection only) |
-| `agent` | The agent loop and its camera tools (`get_camera_state`, `look`, `set_settings`, `shoot`, `tell_user`, `ask_user`, `finish`), image downscaling and brightness stats, the worker client |
+| `agent` | The agent loop and its camera tools (`get_camera_state`, `look`, `set_settings`, `shoot`, `menu_steps`, `save_preset`, `apply_preset`, `show_ideas`, `tell_user`, `ask_user`, `finish`), presets kept on the phone, image downscaling and brightness stats, the worker client |
 | `glasses` | The phone side of the glasses room: HUD updates, arrow-pattern pairing, dictated corrections |
 | `audio` | Push-to-talk recording (24 kHz mono WAV) for Muse Voice Transcribe |
 | `sim` | The camera simulator on the phone (`SimulatedCamera`), for demos without a camera or a computer |
+| `net` | Which network each kind of traffic uses (camera over Wi-Fi, agent server over a network with internet), joining the camera's own Wi-Fi for this app |
+| `service` | The foreground service that keeps the session running with the screen locked |
 | `ui` | Compose screens: `welcome` (first-launch tour), `setup` (demo or own camera, demo scene switcher), `connect` (address, SSDP discovery, login/HTTPS/server under Advanced), `agent` (the chat timeline), `camera` (manual control: live view, tap to focus, dials, shutter), `settings` (menu and glasses sheets), `components` (shared pieces, camera-style menu screens) |
-| `sim` | The camera simulator running on the phone, for the demo |
 
 The camera code mirrors the TypeScript used by the web demo
 (`ccapi/client.ts`, `agent/camera-tools.ts`, `agent/loop.ts`,
@@ -55,6 +56,9 @@ Then:
 1. **Agent**: say or type a goal ("freeze the dog mid-stride"). Corrections typed
    or spoken while it works ("a bit warmer") go to the agent too. *Ask before
    each shot* and the shot budget are behind the sliders icon.
+   Say "save this as club night" to keep the camera's settings as a preset,
+   and "use my club night preset" later (or *Use* in the menu's *Presets*).
+   "Give me pose ideas" shows pictured ideas to swipe through, on the lens too.
 2. **Camera**: manual control. Live view (tap to move the AF point), swipe the
    value strip for mode, aperture, shutter, ISO and exposure compensation
    (values the mode leaves to the camera are greyed), and the shutter. Paused

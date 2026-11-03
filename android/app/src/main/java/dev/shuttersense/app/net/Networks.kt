@@ -10,6 +10,8 @@ import okhttp3.OkHttpClient
 import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.Socket
+import java.net.URL
+import java.net.URLConnection
 import javax.net.SocketFactory
 
 // Which network each kind of traffic uses. A camera's own Wi-Fi usually has
@@ -85,6 +87,9 @@ object Networks {
             // the default network still works on most setups
         }
     }
+
+    /** Opens [url] (a camera's device description, found by discovery) over Wi-Fi. */
+    fun openOnWifi(url: URL): URLConnection = cameraNetwork()?.openConnection(url) ?: url.openConnection()
 
     /** This device itself (USB port forwarding, the emulator's host alias): never re-route. */
     private fun isLocalOnly(host: String) = host == "localhost" || host.startsWith("127.") || host == "10.0.2.2" || host == "::1"

@@ -1,8 +1,11 @@
 package dev.shuttersense.app.ccapi
 
+import dev.shuttersense.app.net.Networks
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
@@ -12,12 +15,12 @@ import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.Interceptor
 import okhttp3.MediaType.Companion.toMediaType
-import dev.shuttersense.app.net.Networks
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import okhttp3.Route
+import java.io.ByteArrayInputStream
 import java.io.IOException
 import java.security.MessageDigest
 import java.security.SecureRandom
@@ -100,21 +103,27 @@ private fun request(base: String, method: String, path: String, body: JsonElemen
 
 /** One request, body read off the main thread (OkHttp bodies are blocking streams). */
 suspend fun OkHttpClient.send(base: String, method: String, path: String, body: JsonElement?, headers: Map<String, String> = emptyMap()): RawResponse =
-    withContext(Dispatchers.IO) {
-        newCall(request(base, method, path, body, headers)).await().use { res ->
-            val names = res.headers.names().associate { it.lowercase() to res.headers(it).joinToString(", ") }
-            RawResponse(res.code, res.header("content-type") ?: "", res.body?.bytes() ?: ByteArray(0), names)
-        }
+    newCall(request(base, method, path, body, headers)).readResponse { res ->
+        val names = res.headers.names().associate { it.lowercase() to res.headers(it).joinToString(", ") }
+        RawResponse(res.code, res.header("content-type") ?: "", res.body?.bytes() ?: ByteArray(0), names)
+    }
+
+/** A request whose body is handed to [read] as it arrives. */
+suspend fun <T> OkHttpClient.stream(base: String, method: String, path: String, read: suspend (StreamResponse) -> T): T =
+    newCall(request(base, method, path, null, emptyMap())).readResponse { res ->
+        val body = res.body?.byteStream() ?: ByteArrayInputStream(ByteArray(0))
+        read(StreamResponse(res.code, res.header("content-type") ?: "", body))
     }
 
 /**
- * A request whose body is handed to [read] as it arrives. Blocking reads
- * don't notice coroutine cancellation, so a watcher cancels the call, which
- * makes the read fail and lets [read] return.
+ * Runs the call and hands its response to [read] off the main thread, closing
+ * it after. Blocking body reads don't notice coroutine cancellation, so a
+ * watcher cancels the call, which makes the read fail and lets [read] return.
  */
-suspend fun <T> OkHttpClient.stream(base: String, method: String, path: String, read: suspend (StreamResponse) -> T): T = coroutineScope {
-    val call = newCall(request(base, method, path, null, emptyMap()))
-    val watcher = launch {
+suspend fun <T> Call.readResponse(read: suspend (Response) -> T): T = coroutineScope {
+    val call = this@readResponse
+    // Undispatched, so it is watching before anything can be cancelled.
+    val watcher = launch(start = CoroutineStart.UNDISPATCHED) {
         try {
             awaitCancellation()
         } finally {
@@ -122,10 +131,11 @@ suspend fun <T> OkHttpClient.stream(base: String, method: String, path: String, 
         }
     }
     try {
-        call.await().use { res ->
-            val body = res.body?.byteStream() ?: java.io.ByteArrayInputStream(ByteArray(0))
-            withContext(Dispatchers.IO) { read(StreamResponse(res.code, res.header("content-type") ?: "", body)) }
-        }
+        call.await().use { res -> withContext(Dispatchers.IO) { read(res) } }
+    } catch (e: IOException) {
+        // A read failed by the cancel above reports the cancellation, not the IOException.
+        ensureActive()
+        throw e
     } finally {
         watcher.cancel()
     }
@@ -134,7 +144,8 @@ suspend fun <T> OkHttpClient.stream(base: String, method: String, path: String, 
 /** Suspends until the call completes; cancelling the coroutine cancels the call. */
 suspend fun Call.await(): Response = suspendCancellableCoroutine { cont ->
     enqueue(object : Callback {
-        override fun onResponse(call: Call, response: Response) = cont.resume(response)
+        // A response that arrives after cancellation is closed, not leaked.
+        override fun onResponse(call: Call, response: Response) = cont.resume(response) { _, r, _ -> r.close() }
         override fun onFailure(call: Call, e: IOException) {
             if (!cont.isCancelled) cont.resumeWithException(e)
         }

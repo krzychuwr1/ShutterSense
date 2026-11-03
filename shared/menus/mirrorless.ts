@@ -54,7 +54,25 @@ export const MIRRORLESS: CameraMenuMap = {
           ],
         },
         { name: "HDR shooting", value: "OFF" },
-        { name: "HDR Mode", value: "Off" },
+        {
+          name: "HDR Mode",
+          value: "Off",
+          items: [
+            {
+              name: "Adjust dyn range",
+              value: "Disable HDR",
+              options: ["Disable HDR", "Auto", "±1 EV", "±2 EV", "±3 EV"],
+              default: "Disable HDR",
+              does: "Merges three exposures into one JPEG, for shade and bright light in one frame (backlit faces, windows); moving subjects can ghost.",
+              aka: ["HDR Mode", "HDR", "HDR shooting", "Dynamic range"],
+              note: "JPEG only: switch RAW off first.",
+            },
+            { name: "Effect", value: "Natural" },
+            { name: "Continuous HDR", value: "1 shot only" },
+            { name: "Auto Image Align", value: "Enable" },
+            { name: "Save source imgs", value: "HDR img only" },
+          ],
+        },
         {
           name: "Auto Lighting Optimizer",
           value: "Standard",

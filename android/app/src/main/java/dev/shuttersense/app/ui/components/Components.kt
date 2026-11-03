@@ -20,7 +20,6 @@ import androidx.compose.foundation.gestures.rememberTransformableState
 import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
@@ -76,6 +75,10 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
+import dev.shuttersense.app.ui.Numeric
 import dev.shuttersense.app.ui.Palette
 import dev.shuttersense.app.ui.decodeDataUrl
 import kotlinx.coroutines.Dispatchers
@@ -197,6 +200,25 @@ fun StatusDot(color: Color, modifier: Modifier = Modifier, pulse: Boolean = fals
     val t = rememberInfiniteTransition(label = "dot")
     val a by t.animateFloat(1f, if (pulse) 0.25f else 1f, infiniteRepeatable(tween(700), RepeatMode.Reverse), label = "dotAlpha")
     Box(modifier.size(size).alpha(a).clip(CircleShape).background(color))
+}
+
+/** A setting as "Label: value" (a preset's lines), the value brighter than its label. */
+@Composable
+fun SettingChip(line: String, modifier: Modifier = Modifier, container: Color = Palette.Surface) {
+    val i = line.indexOf(": ")
+    val text = buildAnnotatedString {
+        if (i < 0) append(line) else {
+            withStyle(SpanStyle(color = Palette.Muted)) { append(line.substring(0, i + 1)) }
+            append(" ")
+            append(line.substring(i + 2))
+        }
+    }
+    Text(
+        text,
+        modifier.clip(RoundedCornerShape(10.dp)).background(container).padding(horizontal = 10.dp, vertical = 6.dp),
+        style = MaterialTheme.typography.labelMedium.merge(Numeric),
+        color = Palette.Text,
+    )
 }
 
 /** Small uppercase label above a group. */
@@ -351,8 +373,3 @@ fun rememberDataUrlImage(url: String?): ImageBitmap? {
     }
     return state.value
 }
-
-/** Arranges children with a fixed gap; a shortcut for the common Column. */
-val Gap8 = Arrangement.spacedBy(8.dp)
-val Gap12 = Arrangement.spacedBy(12.dp)
-val Gap16 = Arrangement.spacedBy(16.dp)

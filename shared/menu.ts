@@ -1,9 +1,9 @@
 // Camera menu screens for settings the control API can't change. The worker
-// looks the setting up in a menu map taken from the camera's manual (see
-// shared/menus/) and turns it into screens: the tab page with every row in
-// order, then each sub-screen down to the value. The phone, the glasses and
-// the web demo draw them in the style of the camera's own menus, so the
-// photographer can follow along on the body.
+// looks the setting up in a camera menu map (shared/menus/) and turns it
+// into screens: the tab page with every row in order, then each sub-screen
+// down to the value. The phone, the glasses and the web demo draw them in
+// the style of the camera's own menus, so the photographer can follow along
+// on the body.
 
 import { MIRRORLESS } from "./menus/mirrorless.ts";
 
@@ -65,7 +65,7 @@ export function cleanMenu(raw: unknown): MenuScreen[] {
   const clip = (v: unknown, max: number) => (typeof v === "string" ? v.replace(/\s+/g, " ").trim().slice(0, max) : "");
   const text = (v: unknown) => clip(v, MENU_LIMITS.text);
   const count = (v: unknown) => {
-    const n = Number(v);
+    const n = typeof v === "number" || typeof v === "string" ? Number(v) : NaN;
     return Number.isInteger(n) && n > 0 && n < 20 ? n : undefined;
   };
   const out: MenuScreen[] = [];
@@ -222,7 +222,7 @@ export function knownSettings(map: CameraMenuMap) {
       tab: f.page.tab,
       page: f.page.page,
       does: f.setting.does!,
-      options: f.setting.options.map((o) => (typeof o === "string" ? o : o.name)),
+      options: f.setting.options.map(label),
       nested: (f.setting.options as (string | MenuNode)[]).filter((o): o is MenuNode => typeof o !== "string"),
       default: f.setting.default,
       note: "note" in f.setting ? f.setting.note : undefined,
@@ -300,7 +300,7 @@ function rowsScreen(tab: MenuTab, nodes: MenuNode[], select: string): Pick<MenuS
 
 /** An option list as a screen. */
 function optionsScreen(tab: MenuTab, title: string, options: (string | MenuNode)[], codes: string[] | undefined, current: string | undefined, select: string, popup: boolean): MenuScreen {
-  const labels = options.map((o) => (typeof o === "string" ? o : o.name));
+  const labels = options.map(label);
   const { rows, start } = windowed(labels, Math.max(0, labels.indexOf(select)));
   const screen: MenuScreen = { tab, title, items: rows, select };
   if (codes?.length) screen.values = rows.map((_, i) => codes[start + i] ?? "");
@@ -392,7 +392,7 @@ export function menuSettingsText(camera: string): string {
     const opts = s.options
       .map((o) => {
         const nested = s.nested.find((n) => n.name === o);
-        const sub = nested?.options?.map((x) => (typeof x === "string" ? x : x.name)) ?? [];
+        const sub = nested?.options?.map(label) ?? [];
         return sub.length ? `${o} (then a value from ${sub[0]} to ${sub[sub.length - 1]})` : o;
       })
       .join(" | ");

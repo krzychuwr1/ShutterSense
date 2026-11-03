@@ -7,6 +7,7 @@ import path from "node:path";
 import { CcapiClient } from "../ccapi/client.ts";
 import { CameraTools } from "../agent/camera-tools.ts";
 import { AgentRun, type AgentApi } from "../agent/loop.ts";
+import type { Preset } from "../shared/agent-api.ts";
 import { VirtualCamera } from "../camsim/camera.ts";
 import { simTransport } from "../camsim/transport.ts";
 import { encodeJpegNode } from "./jpeg-node.ts";
@@ -30,12 +31,29 @@ const api: AgentApi = {
     if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
     return data as never;
   },
+  async inspire(req, signal) {
+    const t = Date.now();
+    const res = await fetch(`${base}/api/inspire`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(req), signal });
+    const data = (await res.json()) as { error?: string; image?: string };
+    console.log(`  (picture ${Date.now() - t} ms)`);
+    if (!res.ok || !data.image) throw new Error(data.error ?? `HTTP ${res.status}`);
+    return { image: data.image };
+  },
 };
+
+let presets: Preset[] = [];
+let ideas = 0;
 
 const started = Date.now();
 const run = new AgentRun(api, tools, {
-  step: (e) => console.log(`[${e.kind}] ${e.text}${e.detail?.length ? `\n    ${e.detail.join("\n    ")}` : ""}${e.errors?.length ? `\n    ! ${e.errors.join("\n    ! ")}` : ""}`),
   status: () => {},
+  step: (e) => {
+    console.log(`[${e.kind}] ${e.text}${e.detail?.length ? `\n    ${e.detail.join("\n    ")}` : ""}${e.errors?.length ? `\n    ! ${e.errors.join("\n    ! ")}` : ""}`);
+    for (const idea of e.ideas ?? []) {
+      console.log(`    idea: ${idea.title}: ${idea.direction}${idea.image ? "" : " (no picture)"}`);
+      if (idea.image) fs.writeFileSync(path.join(out, `${scene}-idea${++ideas}.jpg`), Buffer.from(idea.image.split(",")[1], "base64"));
+    }
+  },
   shot: (r) => fs.writeFileSync(path.join(out, `${scene}-shot${r.n}.jpg`), r.jpeg),
   exposure: () => {},
   confirmShot: async () => true,
@@ -43,6 +61,14 @@ const run = new AgentRun(api, tools, {
     console.log(`  (auto-answering "${q}" with "${options[0] ?? "yes"}")`);
     return options[0] ?? "yes";
   },
+  // As if the photographer pressed the buttons on the body.
+  handSet: async (setting, value) => console.log(`  (set by hand: ${setting} = ${value}, ${cam.handSet(setting, value) ? "applied" : "not simulated"})`),
   ended: (outcome) => console.log(`== ${outcome} in ${((Date.now() - started) / 1000).toFixed(1)} s, ${run.shotsTaken} shots`),
-}, { maxShots: 5, askBeforeShooting: false, glasses: () => false, session: "e2e" });
+}, {
+  maxShots: 5,
+  askBeforeShooting: false,
+  glasses: () => false,
+  session: "e2e",
+  presets: { list: () => presets, save: (p) => void (presets = [...presets.filter((q) => q.name !== p.name), p]) },
+});
 await run.start(goal);

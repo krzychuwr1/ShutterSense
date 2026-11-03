@@ -13,9 +13,9 @@ This isn't a chatbot that comments on photos. The agent operates a real mirrorle
 The website's front page explains how the pieces fit together, with an animated diagram. **Try the simulated experience** (`/try`) runs the phone app's agent loop in your browser against a **simulated camera** that speaks CCAPI, with a simulated glasses lens next to it:
 
 1. `npm install`, then `npm run dev:worker` (it needs a Meta Model API key in `.dev.vars`, see [Setup](#setup)), open http://127.0.0.1:8790 and click **Try the simulated experience**.
-2. Pick a scene: **Club gig under LED lights**, **Basketball under fluorescent lights**, **Dog running in the park**, **Group portrait in the shade** or **Birthday dinner indoors**. Each one starts with camera settings a photographer would recognise as wrong, and several need a setting most people never touch.
+2. Pick a scene: **Club gig under LED lights**, **Basketball under fluorescent lights**, **Portrait in deep shade, sunlit meadow**, **Dog running in the park**, **Group portrait in the shade** or **Birthday dinner indoors**. Each one starts with camera settings a photographer would recognise as wrong, and several need a setting most people never touch. The deep-shade portrait needs HDR Mode, which the control API can't switch on: the agent shows you the way through the camera's menus, and tapping **Done** sets it on the simulated body.
 3. In the phone on the left, tap an example goal or type your own. Watch the step log: what the agent looks at, every settings change as a diff (`Shutter 1/60 s → 1/1000 s`), each test shot, and the final summary with a before/after slider. The camera's rear screen updates live as the agent changes settings.
-4. While it works, or after it's done, type a correction: *"a bit warmer"*, *"keep more of the sky"*.
+4. While it works, or after it's done, type a correction: *"a bit warmer"*, *"keep more of the sky"*. Ask for ideas (*"suggest a few other poses for her"*) and the agent shows pictures of the scene re-imagined in each pose, on the phone and the lens. Say *"save this as club night"* to keep the settings as a preset, and *"use my club night preset"* later (**Presets** on the phone lists them).
 5. **Connect simulated glasses**, next to the camera's rear screen, loads the 600×600 glasses app into a lens on the page. It pairs itself by swiping the phone's arrow pattern, just as real glasses would, then shows each step, settings change and shot. The buttons under it are the Neural Band's gestures: arrows to move, ● to select or dictate ("Tell the agent"), Back. With the lens focused, the arrow keys, <kbd>Enter</kbd> and <kbd>Esc</kbd> work too.
 
 ## How it works
@@ -28,6 +28,7 @@ The website's front page explains how the pieces fit together, with an animated 
       │  HTTPS / WebSocket
  Cloudflare Worker + Durable Objects
       ├─ /api/agent       one stateless agent step, proxied to Muse (the API key never ships in the app)
+      ├─ /api/inspire     one picture for a pose idea via Muse Image, from a live-view frame or a prompt
       ├─ /api/transcribe  push-to-talk via Muse Voice Transcribe
       └─ rooms            phone ⇄ glasses relay, 8-arrow pairing
       │  WebSocket (SSE fallback)
@@ -45,12 +46,14 @@ The website's front page explains how the pieces fit together, with an animated 
 | `set_settings` | Several changes at once, validated against the camera's ability lists. An invalid value returns a precise error listing the valid options. Allow-listed to exposure, white balance (and WB shift), metering, AF and tracking, drive, flash, shutter type, aspect ratio, picture style and its contrast, saturation, sharpness and colour tone; never storage, formats, network or power |
 | `focus` | Puts the AF point on a spot in the frame (switching tracking AF to 1-point), for when autofocus picks the wrong thing |
 | `shoot` | Shutter (with or without AF), waits for the new file in event polling, downloads a display-size copy, and returns the photo, the exposure the camera actually used, and brightness numbers |
+| `save_preset`, `apply_preset` | Saves the camera's current settings under a name, on the phone (with any menu settings set by hand, such as HDR Mode); applies one later. The agent sees each saved preset in one line |
+| `show_ideas` | Two to four ideas for the shot (poses, arrangements, angles) with what to tell the people, each pictured by the image model: the live view re-imagined with the same people and place, or a picture from the prompt alone for general inspiration |
 | `tell_user`, `ask_user` | Short notes and questions, shown on the phone and the lens |
 | `finish` | The summary |
 
 **Guardrails:** a shot budget per goal (5 by default), an optional "ask before shooting", a cancel button, and every settings change shown as a diff.
 
-**Models:** `muse-wonder-1.0` for the agent and vision (images go into function outputs directly), `muse-voice-transcribe-1.0` for push-to-talk. Set `AGENT_MODEL` to try a faster model such as `muse-spark-1.3`.
+**Models:** `muse-wonder-1.0` for the agent and vision (images go into function outputs directly), `muse-voice-transcribe-1.0` for push-to-talk, `muse-image-1.0` for idea pictures (`IMAGE_MODEL` overrides it). Set `AGENT_MODEL` to try a faster model such as `muse-spark-1.3`.
 
 ### The CCAPI client
 
@@ -73,6 +76,7 @@ The client works the same way in TypeScript ([`ccapi/client.ts`](ccapi/client.ts
 - **Motion blur** of moving subjects over the exposure time, **hand shake** that grows with shutter time and focal length, and **one-shot AF** lagging behind a moving subject (servo fixes it).
 - **Noise** from shot and read noise that grows with ISO, **white balance** from colour temperature (the dinner really is lit at 2500 K, so auto white balance leaves it orange), light sources (sun, candle flames, lamps) far above white so they clip and glow, and picture styles with their fine-tuning.
 - **Flicker** from mains-powered tubes (a 100/120 Hz ripple that also shifts colour) and LED dimming: each row integrates the light over its own exposure window as the shutter crosses the frame, so short exposures change brightness from shot to shot and the electronic shutter shows bands. Anti-flicker shooting times the shot to the light's peak; high-frequency anti-flicker offers fine-step shutter speeds that last a whole number of LED periods; flicker detection reports the frequency.
+- **HDR Mode**, which the control API can't reach: once the photographer sets it in the menus (`POST /sim/menu`), each shot merges the brackets as a local tone map, lifting a face in deep shade without burning the sunlit background behind it. Live view stays a single exposure, as on the real camera.
 - **The rest of the body:** flash with distance fall-off and sync speed, exposure and white-balance bracketing, continuous drive and self-timers, the AF point and zone AF, manual focus steps, magnified live view with histogram and AF frames, aspect ratios, RAW files, an electronic shutter that skews fast motion, movie recording (Motion-JPEG), and a card you can browse, protect, delete from and format. Event polling reports every change.
 
 The same simulator runs in a Web Worker for the browser demo, and as a plain HTTP server for testing the Android app without a camera: `npm run sim`, then point the app at `http://<your PC>:8080`. Open that address in a browser to see the camera's screen and switch scenes.

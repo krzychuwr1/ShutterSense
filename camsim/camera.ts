@@ -32,8 +32,6 @@ import { composite, meter, motionAt, render, type RenderOpts, type StyleDetail }
 import { loadScene, SCENE_IDS, type ImageLoader, type Scene } from "./scenes.ts";
 import { defaults, HF_TV, MODES, report, SETTING_BY_PATH, SETTINGS, styleDefaults, USER_STYLES, validate, type SettingDef, type SettingsContext } from "./settings.ts";
 
-export { downscale } from "./image.ts";
-
 export interface SimDeps {
   encodeJpeg(rgba: Uint8ClampedArray, w: number, h: number, quality: number): Promise<Uint8Array>;
   /** Milliseconds; drives moving subjects. */
@@ -108,6 +106,8 @@ export interface SimStatus {
   /** Disconnected or powered off; POST /sim/reconnect brings it back. */
   offline: boolean;
   card: { files: number; free: number };
+  /** Settings the photographer set by hand in the camera's menus (POST /sim/menu), as the menu shows them. */
+  menu: Record<string, string>;
 }
 
 const msg = (status: number, message: string): SimResponse => ({ status, json: { message } });
@@ -199,12 +199,14 @@ export class VirtualCamera {
   private customWb: RGB | null = null;
   private angleInfo = false;
   private hfResult = false;
+  /** HDR Mode, set by hand in the menus (the control API can't): null when off. */
+  private hdr: "auto" | number | null = null;
   private movie = false;
   private recording: Recording | null = null;
   /** Busy = the camera can't take another picture yet; shooting = frames are still being exposed. */
   private busy = false;
   private shooting = false;
-  private held: { stop: boolean; done: Promise<void> } | null = null;
+  private held: { stop: boolean } | null = null;
   private bulbStart: number | null = null;
   private offline = false;
   private battery = 100;
@@ -223,18 +225,19 @@ export class VirtualCamera {
   private waiters: Array<() => void> = [];
   private stopSeq = 0;
   private baseUrl = "http://localhost:8080";
-  private routes = new Map<string, Methods>();
   private start: number;
   private deps: SimDeps;
 
   private constructor(deps: SimDeps) {
     this.deps = deps;
     this.start = deps.now();
-    this.card = new Card((e) => {
-      this.contentEvents.push(e);
-      this.wake();
-    });
-    for (const [ver, path, methods] of ROUTES) this.routes.set(`${ver}/${path}`, methods);
+    this.card = new Card(
+      (e) => {
+        this.contentEvents.push(e);
+        this.wake();
+      },
+      () => this.functions.now(),
+    );
   }
 
   /** A camera pointed at `sceneId` (its images are loaded first). */
@@ -274,6 +277,7 @@ export class VirtualCamera {
     this.afRunning = false;
     this.customWb = null;
     this.hfResult = false;
+    this.hdr = null;
     this.movie = false;
     if (this.recording) this.recording.stop = true;
     this.recording = null;
@@ -281,6 +285,25 @@ export class VirtualCamera {
     this.reported.clear();
     this.lastEffective = "";
     this.wake();
+  }
+
+  /**
+   * The photographer changes a menu setting on the body by hand, one the
+   * control API can't reach (the demo calls this when they confirm a
+   * menu_steps guide). Only HDR Mode changes the pictures; false for
+   * anything else.
+   */
+  handSet(setting: string, value: string): boolean {
+    const name = setting.toLowerCase();
+    if (!/hdr|dyn(amic)?\.? ?range/.test(name)) return false;
+    const v = value.toLowerCase().trim();
+    const stops = v.match(/([123])\s*ev/);
+    if (/disable|^off$/.test(v)) this.hdr = null;
+    else if (v === "auto") this.hdr = "auto";
+    else if (stops) this.hdr = Number(stops[1]);
+    else return false;
+    this.wake();
+    return true;
   }
 
   /** The user reconnects from the camera's menu (after a Wi-Fi disconnect or power-off). */
@@ -299,7 +322,7 @@ export class VirtualCamera {
       sceneTitle: this.scene.title,
       lens: this.scene.lens.name,
       settings: scalars(this.settings),
-      exposure: this.solve(this.clock()),
+      exposure: this.solve(this.clock(), { movie: this.movie }),
       meterEv: meter(this.scene, String(this.eff("metering")), this.clock()),
       liveview: this.lv.size,
       busy: this.busy,
@@ -310,6 +333,7 @@ export class VirtualCamera {
       recording: !!this.recording,
       offline: this.offline,
       card: { files: this.card.files.length, free: this.card.free() },
+      menu: this.hdr === null ? {} : { "HDR Mode": this.hdr === "auto" ? "Auto" : `±${this.hdr} EV` },
     };
   }
 
@@ -396,6 +420,8 @@ export class VirtualCamera {
     const hf = mode === "tv" || mode === "m" ? this.hfTv() : null;
     let N = avNumber(String(this.settings.av)) ?? lens.maxAperture;
     let t = hf ?? tvSeconds(String(this.settings.tv)) ?? 1 / 125;
+    // With flash, Tv and M shoot at the sync speed at most (and solve the rest for it).
+    if (o.flash && (mode === "tv" || mode === "m")) t = Math.max(t, SYNC);
     let iso = autoIso ? 100 : isoNumber(String(this.settings.iso)) ?? 100;
 
     switch (mode) {
@@ -404,8 +430,8 @@ export class VirtualCamera {
         else if (!hf) t *= 2 ** bias;
         break;
       case "bulb":
-        t = o.bulb ?? needT(N, iso);
         if (autoIso) iso = 400;
+        t = o.bulb ?? needT(N, iso);
         break;
       case "movie":
         // Movie auto: a 180° shutter at 30p, program aperture, then ISO.
@@ -451,7 +477,7 @@ export class VirtualCamera {
     // Snap to what the camera can actually set.
     const lensList = this.lensAv();
     const av = nearest(lensList, N, avNumber);
-    const tv = hf ? String(this.settings.hfflickertv) : nearest(TV_SCALE, t, tvSeconds);
+    const tv = hf !== null && t === hf ? String(this.settings.hfflickertv) : nearest(TV_SCALE, t, tvSeconds);
     const isoValue = nearest(ISO_SCALE, iso, isoNumber);
     const Nq = avNumber(av)!;
     const tq = mode === "bulb" ? t : tvSeconds(tv)!;
@@ -493,15 +519,19 @@ export class VirtualCamera {
     const mains = lights.find(isMains);
     if (timed && mains) {
       const g = windowGain(mains, peakStart(mains, travel, t) + travel / 2, t);
-      const subject = this.scene.layers.find((l) => l.name === this.scene.subject.layer);
+      const subject = this.subjectLayer();
       const share = subject?.flicker?.light === mains ? subject.flicker.share : 1;
       gain = 1 / (1 - share + share * (0.2126 * g[0] + 0.7152 * g[1] + 0.0722 * g[2]));
     }
     return { travel, start: (l) => phase.get(l) ?? 0, gain };
   }
 
+  private subjectLayer() {
+    return this.scene.layers.find((l) => l.name === this.scene.subject.layer);
+  }
+
   private subjectDepth() {
-    return this.scene.layers.find((l) => l.name === this.scene.subject.layer)?.depth ?? 3;
+    return this.subjectLayer()?.depth ?? 3;
   }
 
   /** Whether (and how) the flash fires for a still. */
@@ -530,18 +560,22 @@ export class VirtualCamera {
   private runAf(time: number): AfResult {
     if (this.settings.afoperation === "manual") return { ok: true, depth: this.focus, on: this.focusOn };
     const method = String(this.eff("afmethod"));
-    const track = method === "face+tracking" || (method === "whole_area" && this.settings.trackingsetting === "enable");
-    const r = autofocus(this.scene, method, afArea(method, this.afPoint, this.scene.w, this.scene.h), time, track);
+    const r = autofocus(this.scene, method, afArea(method, this.afPoint, this.scene.w, this.scene.h), time, this.tracks(method));
     if (r.ok) {
       let depth = r.depth;
       // One-shot AF locks before the shutter fires: a moving subject has moved on.
-      const subject = this.scene.layers.find((l) => l.name === this.scene.subject.layer);
+      const subject = this.subjectLayer();
       if (subject?.motion && r.on === subject.name && this.settings.afoperation === "oneshot") depth *= 1.07;
       this.focus = depth;
       this.focusOn = r.on;
     }
     this.afState = r.ok ? 1 : 2;
     return r;
+  }
+
+  /** Whether the AF method follows a detected subject: face+tracking, or whole-area AF with tracking on. */
+  private tracks(method: string) {
+    return method === "face+tracking" || (method === "whole_area" && this.settings.trackingsetting === "enable");
   }
 
   // ---------------------------------------------------------------- images
@@ -638,12 +672,11 @@ export class VirtualCamera {
     const rect = (r: Rect) => ({ positionx: r.x, positiony: r.y, positionwidth: r.w, positionheight: r.h });
     const view = this.viewRect();
     const method = String(this.eff("afmethod"));
-    const track = method === "face+tracking" || (method === "whole_area" && this.settings.trackingsetting === "enable");
     let frame: Rect;
     let status = this.afState;
-    if (track) {
+    if (this.tracks(method)) {
       const s = this.scene.subject;
-      const layer = this.scene.layers.find((l) => l.name === s.layer);
+      const layer = this.subjectLayer();
       const dx = layer ? motionAt(layer, this.clock()).dx : 0;
       frame = { x: Math.round(s.x * this.scene.w + dx), y: Math.round(s.y * this.scene.h), w: Math.round(s.w * this.scene.w), h: Math.round(s.h * this.scene.h) };
       if (!status) status = s.face ? 0x20 : 0x30;
@@ -749,14 +782,16 @@ export class VirtualCamera {
   /** Keeps shooting at the drive's frame rate (as fast as rendering allows) until release. */
   private holdBurst() {
     const fps = DRIVE_FPS[String(this.settings.drive)];
-    const hold = { stop: false, done: Promise.resolve() };
+    const hold = { stop: false };
     this.busy = this.shooting = true;
-    hold.done = (async () => {
+    void (async () => {
       try {
         await this.wait(0);
-        for (let n = 0; n < MAX_BURST && !hold.stop; n++) {
+        // Stops at release, at the buffer limit, or when the card is full.
+        let room = true;
+        for (let n = 0; n < MAX_BURST && room && !hold.stop; n++) {
           const t0 = Date.now();
-          for (const f of this.plan(this.clock(), 1)) await this.writeFrame(f);
+          for (const f of this.plan(this.clock(), 1)) if (!(room = await this.writeFrame(f))) break;
           await this.wait(Math.max(0, 1000 / fps - (Date.now() - t0)));
         }
       } finally {
@@ -827,6 +862,7 @@ export class VirtualCamera {
       motionBlur: true,
       shake: this.scene.handheld ? SHAKE : 0,
       seed,
+      ...(this.hdr !== null ? { hdr: this.hdr } : {}),
     };
     const aspect = this.aspectRect();
     const modified = httpDate(this.functions.now());
@@ -1050,7 +1086,11 @@ export class VirtualCamera {
         this.reported.set(k, j);
       }
     }
-    Object.assign(out, this.pushed, this.effectiveChanges());
+    // What the last shot really used wins over the live meter's current pick,
+    // which then comes again on the next poll.
+    const shot = "effective_value_av" in this.pushed;
+    Object.assign(out, this.effectiveChanges(), this.pushed);
+    if (shot) this.lastEffective = "";
     this.pushed = {};
     const keys: Record<ContentEvent["type"], string> = { added: "addedcontents", deleted: "deletedcontents", updated: "updatedcontents", cardformat: "cardformat" };
     for (const e of this.contentEvents.splice(0)) {
@@ -1125,7 +1165,7 @@ export class VirtualCamera {
       if (this.movie) return BUSY;
       return this.card.handle(m, rest.slice("contents".length), params, headers, req.body);
     }
-    const methods = this.routes.get(`${ver}/${rest}`);
+    const methods = ROUTE_METHODS.get(`${ver}/${rest}`);
     if (!methods) return NOT_FOUND;
     if (!methods.includes(METHOD_LETTER[m] ?? "?")) return NOT_ALLOWED;
 
@@ -1486,6 +1526,7 @@ const ROUTES: Array<[string, string, Methods]> = [
   ["ver110", "customfunction/isoincrements", "G"],
   ["ver120", "contents", "GPD"],
 ];
+const ROUTE_METHODS = new Map(ROUTES.map(([ver, path, methods]) => [`${ver}/${path}`, methods]));
 
 /** Just the plain values (for status and shot records). */
 function scalars(o: Record<string, unknown>): Record<string, string | number> {

@@ -3,8 +3,8 @@
 //   GET  /sim/scenes          scene list with suggested goals
 //   POST /sim/scene {id}      switch scene (settings reset to that scene's starting point)
 //   GET  /sim/frame?w=600     what the camera's rear screen shows now
-//   GET  /sim/shot/<n>        a past shot's details
 //   POST /sim/reconnect       reconnect after the camera left the network (Wi-Fi disconnect, power off)
+//   POST /sim/menu {setting, value}  the photographer set a menu setting by hand (HDR Mode); {applied}
 
 import type { SimRequest, SimResponse, VirtualCamera } from "./camera.ts";
 import { SCENE_INFO } from "./scenes.ts";
@@ -21,6 +21,11 @@ export async function handleSim(cam: VirtualCamera, req: SimRequest): Promise<Si
     if (typeof id !== "string" || !SCENE_INFO.some((s) => s.id === id)) return { status: 400, json: { message: "Unknown scene" } };
     await cam.setScene(id);
     return { status: 200, json: cam.status() };
+  }
+  if (pathname === "/sim/menu" && m === "POST") {
+    const b = (req.body ?? {}) as { setting?: unknown; value?: unknown };
+    if (typeof b.setting !== "string" || typeof b.value !== "string") return { status: 400, json: { message: "setting and value are required" } };
+    return { status: 200, json: { applied: cam.handSet(b.setting, b.value) } };
   }
   if (pathname === "/sim/reconnect" && m === "POST") {
     cam.reconnect();

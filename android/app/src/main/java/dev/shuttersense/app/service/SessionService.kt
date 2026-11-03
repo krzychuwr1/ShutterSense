@@ -32,9 +32,13 @@ class SessionService : Service() {
 
         @Volatile private var running = false
 
+        /** Whether the app wants the service; a start that hide() overtook stops itself. */
+        @Volatile private var wanted = false
+
         /** Starts the service with [text] as its notification, or updates the text if it's running. */
         fun show(context: Context, text: String) {
             val app = context.applicationContext
+            wanted = true
             if (running) {
                 app.getSystemService(NotificationManager::class.java)?.notify(NOTIFICATION_ID, notification(app, text))
                 return
@@ -47,6 +51,7 @@ class SessionService : Service() {
         }
 
         fun hide(context: Context) {
+            wanted = false
             if (!running) return
             context.applicationContext.stopService(Intent(context.applicationContext, SessionService::class.java))
         }
@@ -93,6 +98,11 @@ class SessionService : Service() {
             startForeground(NOTIFICATION_ID, n)
         }
         running = true
+        if (!wanted) {
+            // hide() came between the start request and now (startForeground had to be called first).
+            stopSelf()
+            return START_NOT_STICKY
+        }
         if (wake == null) {
             wake = getSystemService(PowerManager::class.java)?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "ShutterSense:session")?.apply {
                 setReferenceCounted(false)

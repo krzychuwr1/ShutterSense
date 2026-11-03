@@ -59,6 +59,9 @@ export async function startGlasses(root: HTMLElement) {
   /** Which menu screen of the current guide the lens shows; it steps on by itself. */
   let guideIdx = 0;
   let guideKey = "";
+  /** Which picture idea the lens shows; the wearer flips with ‹ ›. */
+  let ideaIdx = 0;
+  let ideaKey = "";
 
   // ---------------------------------------------------------------- pairing
 
@@ -89,11 +92,11 @@ export async function startGlasses(root: HTMLElement) {
           // paired for this launch only
         }
         room = got;
-        home = false;
         moves = "";
+        note = "";
         checking = false;
         connect();
-        render();
+        showHud();
         return;
       }
       wrong = true;
@@ -121,10 +124,7 @@ export async function startGlasses(root: HTMLElement) {
       moves = "";
       note = "";
       renderHome();
-    } else if (room) {
-      home = false;
-      render();
-    }
+    } else if (room) showHud();
     return true;
   }
 
@@ -137,14 +137,14 @@ export async function startGlasses(root: HTMLElement) {
     flash(`Sent: “${t}”`);
   };
 
+  // Kept across renders, like the input below: the HUD update that follows a "Sent" would otherwise wipe it at once.
+  const flashEl = el("div", { class: "hud-flash" });
   let flashTimer: ReturnType<typeof setTimeout> | null = null;
   const flash = (text: string) => {
-    const f = lens.querySelector(".hud-flash");
-    if (!f) return;
-    f.textContent = text;
-    f.classList.add("on");
+    flashEl.textContent = text;
+    flashEl.classList.add("on");
     if (flashTimer) clearTimeout(flashTimer);
-    flashTimer = setTimeout(() => f.classList.remove("on"), 2500);
+    flashTimer = setTimeout(() => flashEl.classList.remove("on"), 2500);
   };
 
   function focusables(): HTMLElement[] {
@@ -173,6 +173,8 @@ export async function startGlasses(root: HTMLElement) {
 
   function render() {
     if (home) return renderHome();
+    // Dictating into the field: it keeps the focus when options appear or go above it.
+    const onInput = focusables()[focusIdx] === input;
     const working = hud.phase === "working" || hud.phase === "asking";
     const header = el("div", { class: "hud-head" }, [
       el("span", { class: `hud-dot${online && phones ? " ok" : ""}` }),
@@ -215,22 +217,47 @@ export async function startGlasses(root: HTMLElement) {
           ]),
         );
       }
+      const ideas = hud.ideas ?? [];
+      if (ideas.length) {
+        const key = ideas.map((i) => i.title).join("|");
+        if (key !== ideaKey) {
+          ideaKey = key;
+          ideaIdx = 0;
+        }
+        const n = ideas.length;
+        const idea = ideas[((ideaIdx % n) + n) % n];
+        parts.push(
+          el("div", { class: "hud-idea" }, [
+            idea.image ? el("img", { src: idea.image, alt: "" }) : null,
+            el("div", { class: "hud-idea-text" }, [
+              el("div", { class: "hud-idea-title" }, [`${idea.title}`, el("span", {}, [` ${(((ideaIdx % n) + n) % n) + 1}/${n}`])]),
+              el("div", {}, [idea.direction]),
+              el("div", { class: "hud-options" }, [
+                n > 1 ? el("button", { "data-focus": "", "data-idea": "-1", type: "button", "aria-label": "Previous idea" }, ["‹"]) : null,
+                n > 1 ? el("button", { "data-focus": "", "data-idea": "1", type: "button", "aria-label": "Next idea" }, ["›"]) : null,
+                el("button", { "data-focus": "", "data-say": `Let's try "${idea.title}": ${idea.direction}`, type: "button" }, ["Try this"]),
+              ]),
+            ]),
+          ]),
+        );
+      }
       const media = el("div", { class: "hud-media" }, [
         hud.thumb ? el("img", { src: hud.thumb, alt: "" }) : null,
         hud.diff.length || hud.message
           ? el("div", { class: "hud-diff" }, [hud.message ? el("div", { class: "hud-msg" }, [hud.message]) : null, ...hud.diff.slice(0, 4).map((d) => el("div", {}, [d]))])
           : null,
       ]);
-      if (hud.phase !== "done" || !hud.summary) parts.push(media);
-      else if (hud.thumb) parts.push(el("div", { class: "hud-media small" }, [el("img", { src: hud.thumb, alt: "" })]));
+      // Idea pictures take the room the last shot would.
+      if (!ideas.length && (hud.phase !== "done" || !hud.summary)) parts.push(media);
+      else if (!ideas.length && hud.thumb) parts.push(el("div", { class: "hud-media small" }, [el("img", { src: hud.thumb, alt: "" })]));
     }
     if (hud.exposure && online && phones) parts.push(el("div", { class: "hud-exposure" }, [hud.exposure]));
 
     input.placeholder = hud.question ? "Answer (pinch to dictate)" : "Tell the agent… (pinch to dictate)";
-    parts.push(el("div", { class: "hud-foot" }, [input]), el("div", { class: "hud-flash" }));
+    parts.push(el("div", { class: "hud-foot" }, [input]), flashEl);
     lens.replaceChildren(...parts.filter((p): p is HTMLElement => !!p));
     const list = focusables();
-    setFocus(focusIdx < 0 || focusIdx >= list.length ? list.length - 1 : focusIdx);
+    setFocus(onInput || focusIdx < 0 || focusIdx >= list.length ? list.indexOf(input) : focusIdx);
   }
 
   function hudKey(key: string): boolean {
@@ -248,6 +275,13 @@ export async function startGlasses(root: HTMLElement) {
       return true;
     }
     if (key !== "Enter" || !cur) return false;
+    if (cur.dataset.idea) {
+      ideaIdx += Number(cur.dataset.idea);
+      const at = focusIdx;
+      render();
+      setFocus(at);
+      return true;
+    }
     if (cur.dataset.say) {
       say(cur.dataset.say);
       return true;
@@ -272,6 +306,11 @@ export async function startGlasses(root: HTMLElement) {
 
   function connect() {
     if (!room) return;
+    // Paired again from the pairing screen: leave the old session.
+    conn?.close();
+    hud = { ...EMPTY_HUD };
+    phones = 0;
+    online = false;
     conn = new RoomConn(
       room.code,
       "glasses",
@@ -301,6 +340,18 @@ export async function startGlasses(root: HTMLElement) {
         if (!home) render();
       },
       room.token,
+      () => {
+        // The session expired: back to pairing.
+        room = conn = null;
+        try {
+          store(!!sim).removeItem(ROOM_KEY);
+        } catch {
+          // storage unavailable
+        }
+        home = true;
+        note = "That session has ended. Pair again.";
+        renderHome();
+      },
     );
     conn.start();
   }
@@ -311,6 +362,12 @@ export async function startGlasses(root: HTMLElement) {
   let voiceOn = !embedded;
   let serverVoice = true;
   let playing: HTMLAudioElement | null = null;
+  const stopAudio = () => {
+    if (!playing) return;
+    playing.pause();
+    URL.revokeObjectURL(playing.src);
+    playing = null;
+  };
   const browserSpeak = (text: string) => {
     if (!("speechSynthesis" in window)) return;
     const voices = speechSynthesis.getVoices().filter((v) => v.lang.startsWith("en"));
@@ -326,8 +383,10 @@ export async function startGlasses(root: HTMLElement) {
       try {
         const res = await fetch("/api/speak", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text }) });
         if (res.ok) {
-          playing?.pause();
-          playing = new Audio(URL.createObjectURL(await res.blob()));
+          const blob = await res.blob();
+          if (!voiceOn) return;
+          stopAudio();
+          playing = new Audio(URL.createObjectURL(blob));
           await playing.play();
           return;
         }
@@ -340,7 +399,9 @@ export async function startGlasses(root: HTMLElement) {
     browserSpeak(text);
   };
 
-  // Back: from the HUD to the pairing screen, then out.
+  // Back: from the HUD to the pairing screen, then out. Each visit to the HUD
+  // adds a history entry for Back to take off; an embedded lens must not add
+  // entries to the demo page's history.
   const back = () => {
     if (!home) {
       home = true;
@@ -348,18 +409,21 @@ export async function startGlasses(root: HTMLElement) {
     }
   };
   window.addEventListener("popstate", back);
+  function showHud() {
+    home = false;
+    if (!embedded) history.pushState({ hud: 1 }, "");
+    render();
+  }
 
   const press = (key: string, repeat = false) => (home ? repeat || homeKey(key) : hudKey(key));
   document.addEventListener("keydown", (e) => {
     if (press(e.key, e.repeat)) e.preventDefault();
   });
 
-  // An embedded lens must not add entries to the demo page's history.
   if (room) {
-    if (!embedded) history.pushState({ hud: 1 }, "");
     connect();
-  }
-  render();
+    showHud();
+  } else render();
 
   // Step the lens through a guide's menu screens.
   setInterval(() => {
@@ -369,34 +433,39 @@ export async function startGlasses(root: HTMLElement) {
   }, 2600);
 
   if (sim) {
+    let swiping = false;
     document.addEventListener("keydown", (e) => {
       if (e.key !== "Escape" || home) return;
       if (embedded) back();
       else history.back();
     });
     window.addEventListener("message", async (e) => {
-      const data = e.data as { type?: string; moves?: string; key?: string };
+      const data = e.data as { type?: string; moves?: string; key?: string; on?: unknown };
       if (e.origin !== location.origin || !host || e.source !== host) return;
-      // The demo page's on-screen D-pad.
+      // The demo page's voice switch.
       if (data?.type === "sim-sound") {
-        voiceOn = (data as { on?: unknown }).on === true;
+        voiceOn = data.on === true;
         if (!voiceOn) {
-          playing?.pause();
+          stopAudio();
           if ("speechSynthesis" in window) speechSynthesis.cancel();
         }
         return;
       }
+      // The demo page's on-screen D-pad.
       if (data?.type === "sim-key" && typeof data.key === "string") {
         if (data.key === "Escape") back();
         else press(data.key);
         return;
       }
-      if (data?.type !== "sim-pair" || !home || checking || !/^[UDLR]+$/.test(data.moves ?? "")) return;
+      // The page may hand over the pattern twice (on "ready" and when it arrives): one swipe at a time.
+      if (data?.type !== "sim-pair" || !home || checking || swiping || !/^[UDLR]+$/.test(data.moves ?? "")) return;
+      swiping = true;
       moves = "";
       for (const m of data.moves!) {
         await new Promise((r) => setTimeout(r, 200));
         homeKey(KEY_FOR[m]);
       }
+      swiping = false;
     });
     if (home) host?.postMessage({ type: "sim-ready" }, location.origin);
   }

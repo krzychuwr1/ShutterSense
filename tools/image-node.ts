@@ -1,12 +1,14 @@
-// ImageTools for Node (tests and the end-to-end script), with jpeg-js.
+// ImageTools for Node (tests and the end-to-end script), with jpeg-js (and pngjs for idea pictures).
 
 import jpeg from "jpeg-js";
+import { PNG } from "pngjs";
 import type { ImageTools, PreparedImage } from "../agent/camera-tools.ts";
 import { imageStats } from "../agent/image-stats.ts";
 
 export const nodeImages: ImageTools = {
   async prepare(bytes: Uint8Array, maxSide: number, quality = 0.8): Promise<PreparedImage> {
-    const img = jpeg.decode(Buffer.from(bytes), { useTArray: true, formatAsRGBA: true });
+    const isPng = bytes[0] === 0x89 && bytes[1] === 0x50;
+    const img = isPng ? PNG.sync.read(Buffer.from(bytes)) : jpeg.decode(Buffer.from(bytes), { useTArray: true, formatAsRGBA: true });
     const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
     const w = Math.max(1, Math.round(img.width * scale));
     const h = Math.max(1, Math.round(img.height * scale));

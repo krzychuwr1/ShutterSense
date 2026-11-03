@@ -1,12 +1,13 @@
 // Shutter Sense backend (one Cloudflare Worker, static assets alongside):
 //   POST /api/agent        one stateless agent step, proxied to Muse (the key never leaves here)
+//   POST /api/inspire      one picture for a pose or composition idea (Muse Image), from a live-view frame or a prompt
 //   POST /api/transcribe   push-to-talk audio -> text (Muse Voice Transcribe)
 //   POST /api/speak        a line for the glasses -> speech (Wit.ai voices), when WIT_TOKEN is set
 //   /api/rooms/...         the phone <-> glasses relay, one Durable Object per session
 //   POST /api/pair         glasses trade a swiped arrow pattern for their session
 
 import { DurableObject } from "cloudflare:workers";
-import { AGENT_LIMITS, TOOL_NAMES, type AgentContext, type AgentResponse } from "../shared/agent-api.ts";
+import { AGENT_LIMITS, DEFAULT_MAX_SHOTS, INSPIRE_LIMITS, PRESET_LIMITS, TOOL_NAMES, type AgentContext, type AgentResponse, type PresetSummary } from "../shared/agent-api.ts";
 import { cleanMenu, rewriteMenuSteps } from "../shared/menu.ts";
 import {
   CODE_ALPHABET,
@@ -14,6 +15,7 @@ import {
   CODE_RE,
   EMPTY_HUD,
   HUD_THUMB_BYTES,
+  IDEA_IMAGE_BYTES,
   PATTERN_LENGTH,
   PATTERN_RE,
   PATTERN_TTL_MS,
@@ -23,7 +25,7 @@ import {
   type Role,
   type ServerMessage,
 } from "../shared/protocol.ts";
-import { createResponse, MODELS, MuseError, transcribe } from "./muse.ts";
+import { createResponse, editImage, generateImage, MODELS, MuseError, transcribe } from "./muse.ts";
 import { MAX_SPEECH_CHARS, speak, VoiceError } from "./voice.ts";
 import { buildInstructions, TOOLS } from "./prompt.ts";
 
@@ -36,6 +38,8 @@ export interface Env {
   MUSE_API_KEY: string;
   /** Optional override of the agent model (e.g. a faster Muse Spark model). */
   AGENT_MODEL?: string;
+  /** Optional override of the image model for picture ideas. */
+  IMAGE_MODEL?: string;
   /** Wit.ai server access token for the glasses' voice; without it the lens falls back to the browser's voices. */
   WIT_TOKEN?: string;
   /** Wit.ai voice name. */
@@ -84,6 +88,11 @@ async function api(request: Request, env: Env, url: URL, ctx: ExecutionContext):
     return agent(request, env);
   }
 
+  if (route === "inspire" && parts.length === 2) {
+    if (request.method !== "POST") return json({ error: "method not allowed" }, 405);
+    return inspire(request, env);
+  }
+
   if (route === "transcribe" && parts.length === 2) {
     if (request.method !== "POST") return json({ error: "method not allowed" }, 405);
     const tooMany = await limited(env, request, "voice");
@@ -95,7 +104,9 @@ async function api(request: Request, env: Env, url: URL, ctx: ExecutionContext):
     try {
       return json({ text: await transcribe(env.MUSE_API_KEY, audio.buffer as ArrayBuffer) });
     } catch (e) {
-      return json({ error: e instanceof MuseError ? e.message : "Transcription failed" }, 502);
+      if (e instanceof MuseError) return json({ error: e.message }, e.status);
+      console.error("transcribe error", e);
+      return json({ error: "Transcription failed" }, 502);
     }
   }
 
@@ -104,8 +115,8 @@ async function api(request: Request, env: Env, url: URL, ctx: ExecutionContext):
     if (!env.WIT_TOKEN) return json({ error: "No voice configured" }, 503);
     const tooMany = await limited(env, request, "speech");
     if (tooMany) return tooMany;
-    const body = (await request.json().catch(() => null)) as { text?: unknown } | null;
-    const text = typeof body?.text === "string" ? body.text.replace(/\s+/g, " ").trim().slice(0, MAX_SPEECH_CHARS) : "";
+    const body = await readJson(request, 8_000);
+    const text = isObj(body) && typeof body.text === "string" ? body.text.replace(/\s+/g, " ").trim().slice(0, MAX_SPEECH_CHARS) : "";
     if (!text) return json({ error: "Nothing to say" }, 400);
     try {
       return await speak(env.WIT_TOKEN, env.WIT_VOICE || "wit$Rebecca", text, ctx);
@@ -119,11 +130,11 @@ async function api(request: Request, env: Env, url: URL, ctx: ExecutionContext):
     if (request.method !== "POST") return json({ error: "method not allowed" }, 405);
     const tooMany = await limited(env, request, "pair");
     if (tooMany) return tooMany;
-    const body = (await request.json().catch(() => null)) as { pattern?: unknown } | null;
-    const pattern = typeof body?.pattern === "string" ? body.pattern : "";
+    const body = await readJson(request, 1_000);
+    const pattern = isObj(body) && typeof body.pattern === "string" ? body.pattern : "";
     if (!PATTERN_RE.test(pattern)) return json({ error: `Patterns are ${PATTERN_LENGTH} moves` }, 400);
-    const res = await env.PAIR.get(env.PAIR.idFromName(pattern)).fetch("https://pair/claim", { method: "POST" });
-    return json(await res.json(), res.status);
+    const session = await env.PAIR.get(env.PAIR.idFromName(pattern)).claim();
+    return session ? json(session) : json({ error: "No phone is showing that pattern" }, 404);
   }
 
   if (route !== "rooms") return json({ error: "not found" }, 404);
@@ -134,8 +145,8 @@ async function api(request: Request, env: Env, url: URL, ctx: ExecutionContext):
     if (tooMany) return tooMany;
     for (let attempt = 0; attempt < 6; attempt++) {
       const code = randomCode();
-      const res = await roomStub(env, code).fetch("https://room/init", { method: "POST", headers: { "x-room-code": code } });
-      if (res.ok) return json(await res.json());
+      const room = await roomStub(env, code).create(code);
+      if (room) return json(room);
     }
     return json({ error: "could not allocate a room" }, 503);
   }
@@ -143,17 +154,14 @@ async function api(request: Request, env: Env, url: URL, ctx: ExecutionContext):
   const code = (parts[2] ?? "").toUpperCase();
   if (!CODE_RE.test(code)) return json({ error: `Session codes are ${CODE_LENGTH} letters` }, 400);
   const sub = parts.slice(3).join("/");
-  if (sub === "init") return json({ error: "not found" }, 404);
   const action = sub === "ws" || sub === "events" ? "connect" : sub === "send" ? "send" : "lookup";
   const tooMany = await limited(env, request, action);
   if (tooMany) return tooMany;
   const target = new URL("https://room/" + sub);
   target.search = url.search;
-  const headers = new Headers(request.headers);
-  headers.set("x-room-code", code);
   return roomStub(env, code).fetch(target.toString(), {
     method: request.method,
-    headers,
+    headers: request.headers,
     body: request.method === "GET" || request.method === "HEAD" ? undefined : request.body,
   });
 }
@@ -212,6 +220,47 @@ async function agent(request: Request, env: Env): Promise<Response> {
   }
 }
 
+// ------------------------------------------------------------------ picture ideas
+
+/**
+ * One picture for a show_ideas idea. With a live-view frame, the image model
+ * re-imagines that frame (same people, place and light, new pose); without
+ * one, it makes a picture from the prompt alone.
+ */
+async function inspire(request: Request, env: Env): Promise<Response> {
+  const tooMany = await limited(env, request, "inspire");
+  if (tooMany) return tooMany;
+  const body = await readJson(request, INSPIRE_LIMITS.maxBytes);
+  if (!isObj(body)) return json({ error: "Expected a JSON object (images at most 1.5 MB)" }, 400);
+  const prompt = typeof body.prompt === "string" ? body.prompt.replace(/\s+/g, " ").trim().slice(0, INSPIRE_LIMITS.prompt) : "";
+  if (!prompt) return json({ error: "prompt is required" }, 400);
+  const image = typeof body.image === "string" ? body.image : "";
+  if (image && !image.startsWith("data:image/jpeg;base64,")) return json({ error: "image must be a JPEG data URL" }, 400);
+  if (!(await takeBudget(env))) return json({ error: "The demo is very busy right now. Try again in a few minutes." }, 429);
+  const model = env.IMAGE_MODEL || MODELS.image;
+  try {
+    const out = image
+      ? await editImage(env.MUSE_API_KEY, model, base64Bytes(image.slice(image.indexOf(",") + 1)), `${EDIT_PREFIX} ${prompt}`)
+      : await generateImage(env.MUSE_API_KEY, model, `${GENERATE_PREFIX} ${prompt}`);
+    return json({ image: out });
+  } catch (e) {
+    if (e instanceof MuseError) return json({ error: e.message }, e.status);
+    console.error("inspire error", e);
+    return json({ error: "The picture couldn't be made." }, 502);
+  }
+}
+
+const EDIT_PREFIX =
+  "Edit this camera live-view photo. Keep the same people (faces, clothes), the same place, light and colours, and the same camera position and lens. Change only how the people pose and arrange themselves, as described. Photorealistic, natural, no text or graphics. The change:";
+const GENERATE_PREFIX = "A natural, photorealistic photograph showing a pose and composition idea for a photographer. No text or graphics. The picture:";
+
+function base64Bytes(b64: string): Uint8Array {
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
 function context(raw: unknown): AgentContext | string {
   if (!isObj(raw)) return "context is required";
   const text = (v: unknown, max: number) => String(v ?? "").replace(/\s+/g, " ").trim().slice(0, max);
@@ -221,14 +270,19 @@ function context(raw: unknown): AgentContext | string {
     const x = Math.floor(Number(v));
     return Number.isFinite(x) ? Math.min(hi, Math.max(lo, x)) : d;
   };
-  const maxShots = n(raw.maxShots, 1, 10, 5);
   return {
     goal,
     camera: text(raw.camera, 120) || "Camera",
     shotsTaken: n(raw.shotsTaken, 0, 50, 0),
-    maxShots,
+    // Follow-up corrections raise the budget past the photographer's setting (shots taken + 3).
+    maxShots: n(raw.maxShots, 1, 50, DEFAULT_MAX_SHOTS),
     askBeforeShooting: raw.askBeforeShooting === true,
     glasses: raw.glasses === true,
+    presets: (Array.isArray(raw.presets) ? raw.presets : [])
+      .slice(0, PRESET_LIMITS.count)
+      .filter(isObj)
+      .map((p): PresetSummary => ({ name: text(p.name, PRESET_LIMITS.name), note: text(p.note, PRESET_LIMITS.note), settings: text(p.settings, 400) }))
+      .filter((p) => p.name),
   };
 }
 
@@ -241,7 +295,7 @@ function sanitizeInput(raw: unknown): unknown[] | string {
   if (raw.length > AGENT_LIMITS.maxItems) return "input has too many items";
   let images = 0;
   const content = (c: unknown, allowOutput: boolean): unknown[] | string => {
-    if (typeof c === "string") return [{ type: "input_text", text: c.slice(0, 20_000) }];
+    if (typeof c === "string") return [{ type: allowOutput ? "output_text" : "input_text", text: c.slice(0, 20_000) }];
     if (!Array.isArray(c)) return "bad content";
     const out: unknown[] = [];
     for (const part of c) {
@@ -290,6 +344,7 @@ const RATE_LIMITS = {
   connect: [300, 600], // WebSocket / SSE connections
   send: [600, 600], // SSE-fallback messages
   voice: [60, 600], // transcriptions
+  inspire: [40, 600], // idea pictures (up to four per show_ideas)
   speech: [300, 600], // lines spoken on the glasses
   say: [120, 600], // dictated instructions from the glasses
   pattern: [30, 600], // phones asking for a pairing pattern
@@ -345,7 +400,20 @@ interface Stored {
   glassesToken: string;
   hud: HudState;
   pattern: { moves: string; expires: number } | null;
+  /** Last time a client connected or the phone sent a HUD. */
+  active: number;
 }
+
+const ROOM_DEFAULTS: Stored = { code: "", created: 0, phoneToken: "", glassesToken: "", hud: EMPTY_HUD, pattern: null, active: 0 };
+/** A session nobody has connected to or updated for this long is deleted. */
+const ROOM_IDLE_MS = 24 * 60 * 60_000;
+/** Largest message the room accepts from a client (a HUD with its thumbnail and idea pictures fits). */
+const MAX_MESSAGE_BYTES = 256_000;
+/** HUD updates a session takes per HUD_WINDOW_MS (the phone sends a few a second at most); more are dropped. */
+const HUD_PER_WINDOW = 50;
+const HUD_WINDOW_MS = 10_000;
+/** Messages an SSE client may fall behind by before it is dropped (it reconnects and gets the latest HUD). */
+const SSE_BACKLOG = 16;
 
 interface SseClient { role: Role; writer: WritableStreamDefaultWriter<Uint8Array> }
 
@@ -358,13 +426,18 @@ export class Room extends DurableObject<Env> {
   private s!: Stored;
   private sse = new Set<SseClient>();
   private heartbeat: ReturnType<typeof setInterval> | null = null;
+  private hudWindow = { start: 0, n: 0 };
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
     ctx.blockConcurrencyWhile(async () => {
-      const defaults: Stored = { code: "", created: 0, phoneToken: "", glassesToken: "", hud: EMPTY_HUD, pattern: null };
-      this.s = { ...defaults, ...(await ctx.storage.get<Stored>("state")) };
+      this.s = { ...ROOM_DEFAULTS, ...(await ctx.storage.get<Stored>("state")) };
+      // Sessions from before the idle clean-up have no alarm yet.
+      if (this.s.created && !(await ctx.storage.getAlarm())) {
+        this.s.active ||= Date.now();
+        await ctx.storage.setAlarm(Date.now() + ROOM_IDLE_MS);
+      }
     });
   }
 
@@ -372,19 +445,34 @@ export class Room extends DurableObject<Env> {
     return this.ctx.storage.put("state", this.s);
   }
 
+  /** RPC from the API: starts the session under `code`. Null if the code is taken. */
+  async create(code: string): Promise<{ code: string; token: string } | null> {
+    if (this.s.created) return null;
+    this.s.code = code;
+    this.s.created = this.s.active = Date.now();
+    this.s.phoneToken = crypto.randomUUID();
+    this.s.glassesToken = crypto.randomUUID();
+    await this.save();
+    await this.ctx.storage.setAlarm(Date.now() + ROOM_IDLE_MS);
+    return { code, token: this.s.phoneToken };
+  }
+
+  /** Forgets the session once nobody has used it for ROOM_IDLE_MS. */
+  async alarm() {
+    if (!this.s.created) return;
+    const idleUntil = this.s.active + ROOM_IDLE_MS;
+    if (this.ctx.getWebSockets().length || this.sse.size || idleUntil > Date.now()) {
+      await this.ctx.storage.setAlarm(Math.max(idleUntil, Date.now() + 60 * 60_000));
+      return;
+    }
+    await this.ctx.storage.deleteAll();
+    this.s = { ...ROOM_DEFAULTS };
+  }
+
   async fetch(req: Request): Promise<Response> {
     const url = new URL(req.url);
     const path = url.pathname;
 
-    if (path === "/init" && req.method === "POST") {
-      if (this.s.created) return json({ error: "exists" }, 409);
-      this.s.code = req.headers.get("x-room-code") ?? "";
-      this.s.created = Date.now();
-      this.s.phoneToken = crypto.randomUUID();
-      this.s.glassesToken = crypto.randomUUID();
-      await this.save();
-      return json({ code: this.s.code, token: this.s.phoneToken });
-    }
     // Same answer as any other unknown path, so probing doesn't reveal which codes exist.
     if (!this.s.created) return json({ error: "not found" }, 404);
     if (path === "/") return new Response(null, { status: 204 });
@@ -403,6 +491,7 @@ export class Room extends DurableObject<Env> {
       server.serializeAttachment({ role, ip: clientIp(req) });
       server.send(JSON.stringify(this.hello(role)));
       this.broadcastPresence();
+      await this.touch();
       return new Response(null, { status: 101, webSocket: client });
     }
 
@@ -413,11 +502,12 @@ export class Room extends DurableObject<Env> {
       this.writeSse(client, JSON.stringify(this.hello(role)));
       this.ensureHeartbeat();
       this.broadcastPresence();
+      await this.touch();
       return new Response(readable, { headers: { "content-type": "text/event-stream", "cache-control": "no-cache, no-transform" } });
     }
 
     if (path === "/send" && req.method === "POST") {
-      await this.handle(role, await req.json().catch(() => null), clientIp(req));
+      await this.handle(role, await readJson(req, MAX_MESSAGE_BYTES), clientIp(req));
       return json({ ok: true });
     }
 
@@ -425,7 +515,7 @@ export class Room extends DurableObject<Env> {
   }
 
   async webSocketMessage(ws: WebSocket, data: string | ArrayBuffer) {
-    if (typeof data !== "string") return;
+    if (typeof data !== "string" || data.length > MAX_MESSAGE_BYTES) return;
     const { role, ip = "unknown" } = ws.deserializeAttachment() as { role: Role; ip?: string };
     let msg: unknown;
     try {
@@ -451,9 +541,25 @@ export class Room extends DurableObject<Env> {
 
   /** RPC from a PairSlot: glasses just swiped this room's pattern. */
   async paired(moves: string) {
-    if (this.s.pattern?.moves === moves) this.s.pattern = null;
-    await this.save();
+    if (!this.s.created) return;
+    if (this.s.pattern?.moves === moves) {
+      this.s.pattern = null;
+      await this.save();
+    }
     this.broadcast({ t: "pairing", pattern: null, expiresIn: 0 }, "phone");
+  }
+
+  /** Counts a HUD update against HUD_PER_WINDOW (WebSocket messages skip the per-IP limiter). */
+  private hudAllowed() {
+    const now = Date.now();
+    if (now - this.hudWindow.start >= HUD_WINDOW_MS) this.hudWindow = { start: now, n: 0 };
+    return ++this.hudWindow.n <= HUD_PER_WINDOW;
+  }
+
+  /** Marks the session as in use, for the idle clean-up. */
+  private touch() {
+    this.s.active = Date.now();
+    return this.save();
   }
 
   private async handle(role: Role, raw: unknown, ip: string) {
@@ -461,11 +567,11 @@ export class Room extends DurableObject<Env> {
     const msg = raw as ClientMessage;
     switch (msg.t) {
       case "hud": {
-        if (role !== "phone") return;
+        if (role !== "phone" || !this.hudAllowed()) return;
         const hud = cleanHud(msg.hud);
         if (!hud) return;
         this.s.hud = hud;
-        await this.save();
+        await this.touch();
         this.broadcast({ t: "hud", hud }, "glasses");
         return;
       }
@@ -539,7 +645,13 @@ export class Room extends DurableObject<Env> {
   }
 
   private writeSse(client: SseClient, data: string) {
-    client.writer.write(enc.encode(`data: ${data}\n\n`)).catch(() => this.dropSse(client));
+    this.writeRaw(client, `data: ${data}\n\n`);
+  }
+
+  /** Writes to an SSE client, dropping one that has stopped reading rather than queueing for it forever. */
+  private writeRaw(client: SseClient, chunk: string) {
+    if ((client.writer.desiredSize ?? 0) < -SSE_BACKLOG) return this.dropSse(client);
+    client.writer.write(enc.encode(chunk)).catch(() => this.dropSse(client));
   }
 
   private dropSse(client: SseClient) {
@@ -556,7 +668,7 @@ export class Room extends DurableObject<Env> {
         this.heartbeat = null;
         return;
       }
-      for (const c of this.sse) c.writer.write(enc.encode(`: ping\n\n`)).catch(() => this.dropSse(c));
+      for (const c of this.sse) this.writeRaw(c, `: ping\n\n`);
     }, 15_000);
   }
 }
@@ -587,6 +699,15 @@ function cleanHud(raw: unknown): HudState | null {
     guide: g && text(g.setting, 60)
       ? { setting: text(g.setting, 60)!, steps: Array.isArray(g.steps) ? g.steps.slice(0, 8).map((st) => text(st, 80) ?? "").filter(Boolean) : [], menu: cleanMenu(g.menu) }
       : null,
+    ideas: (Array.isArray(raw.ideas) ? raw.ideas : [])
+      .slice(0, INSPIRE_LIMITS.ideas)
+      .filter(isObj)
+      .map((i) => ({
+        title: text(i.title, INSPIRE_LIMITS.title) ?? "",
+        direction: text(i.direction, INSPIRE_LIMITS.direction) ?? "",
+        image: typeof i.image === "string" && i.image.startsWith("data:image/jpeg;base64,") && i.image.length <= IDEA_IMAGE_BYTES ? i.image : null,
+      }))
+      .filter((i) => i.title),
   };
 }
 
@@ -619,18 +740,28 @@ export class PairSlot extends DurableObject<Env> {
     if (cur && cur.expires <= Date.now()) await this.ctx.storage.delete("offer");
   }
 
-  /** POST claims the offer (single use). */
-  async fetch(req: Request): Promise<Response> {
-    if (req.method !== "POST") return json({ error: "not found" }, 404);
+  /** Claims the offer (single use): the session's code and glasses token, or null if there is none. */
+  async claim(): Promise<{ code: string; token: string } | null> {
     const cur = await this.ctx.storage.get<PairOffer>("offer");
-    if (!cur || cur.expires <= Date.now()) return json({ error: "No phone is showing that pattern" }, 404);
+    if (!cur || cur.expires <= Date.now()) return null;
     await this.ctx.storage.delete("offer");
     await this.env.ROOM.get(this.env.ROOM.idFromName(cur.code)).paired(cur.moves);
-    return json({ code: cur.code, token: cur.token });
+    return { code: cur.code, token: cur.token };
   }
 }
 
 // ------------------------------------------------------------------ helpers
+
+/** Parses a JSON body of at most `max` bytes; null if it is larger or isn't JSON. */
+async function readJson(req: Request, max: number): Promise<unknown> {
+  const raw = await readBody(req, max);
+  if (!raw) return null;
+  try {
+    return JSON.parse(new TextDecoder().decode(raw));
+  } catch {
+    return null;
+  }
+}
 
 /** Reads a request body, giving up (null) as soon as it exceeds `max` bytes. */
 async function readBody(req: Request, max: number): Promise<Uint8Array | null> {

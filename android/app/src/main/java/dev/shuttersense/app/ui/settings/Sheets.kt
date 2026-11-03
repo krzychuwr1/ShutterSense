@@ -3,6 +3,8 @@ package dev.shuttersense.app.ui.settings
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -18,9 +20,12 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.HelpOutline
+import androidx.compose.material.icons.rounded.Bookmark
 import androidx.compose.material.icons.rounded.ChevronRight
-import androidx.compose.material.icons.rounded.HelpOutline
+import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.LinkOff
+import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.SwapHoriz
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -42,21 +47,26 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import dev.shuttersense.app.agent.Preset
+import dev.shuttersense.app.agent.presetLines
 import dev.shuttersense.app.glasses.RoomState
 import dev.shuttersense.app.ui.AppViewModel
 import dev.shuttersense.app.ui.CameraStatus
 import dev.shuttersense.app.ui.Numeric
 import dev.shuttersense.app.ui.Palette
+import dev.shuttersense.app.ui.Tab
 import dev.shuttersense.app.ui.components.Eyebrow
 import dev.shuttersense.app.ui.components.Field
 import dev.shuttersense.app.ui.components.GlassesGlyph
 import dev.shuttersense.app.ui.components.SecondaryButton
+import dev.shuttersense.app.ui.components.SettingChip
 import dev.shuttersense.app.ui.components.StatusDot
+import dev.shuttersense.app.ui.components.TextAction
 import androidx.compose.ui.text.input.KeyboardType
 import kotlinx.coroutines.delay
 
-// The two sheets off the top bar: the menu (camera, glasses, agent server,
-// how it works, about) and glasses pairing.
+// The sheets off the top bar: the menu (camera, glasses, presets, agent
+// server, how it works, about), the saved presets and glasses pairing.
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -100,7 +110,13 @@ fun SettingsSheet(vm: AppViewModel, onDismiss: () -> Unit) {
             MenuRow(null, "Glasses", if (vm.glassesOnline > 0) "${vm.glassesOnline} connected" else "Pair Ray-Ban Display", { onDismiss(); vm.openGlasses() }) {
                 GlassesGlyph(Palette.Text, size = 22.dp)
             }
-            MenuRow(Icons.Rounded.HelpOutline, "How it works", "The welcome tour", { onDismiss(); vm.openWelcome() })
+            MenuRow(
+                Icons.Rounded.Bookmark,
+                "Presets",
+                if (vm.presets.isEmpty()) "None saved yet" else "${vm.presets.size} saved",
+                { onDismiss(); vm.showPresets = true },
+            )
+            MenuRow(Icons.AutoMirrored.Rounded.HelpOutline, "How it works", "The welcome tour", { onDismiss(); vm.openWelcome() })
 
             Spacer(Modifier.height(22.dp))
             Eyebrow("Agent server")
@@ -135,6 +151,76 @@ private fun MenuRow(icon: ImageVector?, title: String, sub: String, onClick: () 
             Text(sub, style = MaterialTheme.typography.bodySmall, color = Palette.Muted)
         }
         Icon(Icons.Rounded.ChevronRight, null, tint = Palette.Faint)
+    }
+}
+
+// ------------------------------------------------------------------ presets
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun PresetsSheet(vm: AppViewModel) {
+    ModalBottomSheet(
+        onDismissRequest = { vm.showPresets = false },
+        containerColor = Palette.Surface,
+        contentColor = Palette.Text,
+        scrimColor = Color(0x99000000),
+    ) {
+        Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp).padding(bottom = 32.dp)) {
+            Text("Presets", style = MaterialTheme.typography.headlineSmall, color = Palette.Text)
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "Camera setups the agent saved for you. Use one and the agent applies it, then walks you through anything set by hand.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = Palette.Muted,
+            )
+            Spacer(Modifier.height(20.dp))
+            if (vm.presets.isEmpty()) {
+                Text(
+                    "None yet. Once a shot looks right, say “save this as club night”; later, “use my club night preset”.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Palette.Faint,
+                )
+            }
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                // Newest first.
+                vm.presets.asReversed().forEach { p -> PresetRow(p, vm) }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun PresetRow(p: Preset, vm: AppViewModel) {
+    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(Palette.Raised).padding(18.dp)) {
+        Text(p.name, style = MaterialTheme.typography.titleLarge, color = Palette.Text)
+        if (p.note.isNotEmpty()) {
+            Spacer(Modifier.height(4.dp))
+            Text(p.note, style = MaterialTheme.typography.bodyMedium, color = Palette.Muted)
+        }
+        val lines = presetLines(p)
+        if (lines.isNotEmpty()) {
+            Spacer(Modifier.height(12.dp))
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                lines.forEach { SettingChip(it, container = Palette.Raised2) }
+            }
+        }
+        Spacer(Modifier.height(14.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            SecondaryButton(
+                "Use",
+                {
+                    vm.showPresets = false
+                    vm.tab = Tab.AGENT
+                    vm.usePreset(p)
+                },
+                Modifier.weight(1f),
+                icon = Icons.Rounded.PlayArrow,
+                height = 44.dp,
+            )
+            Spacer(Modifier.width(8.dp))
+            TextAction("Delete", { vm.deletePreset(p) }, color = Palette.Bad, icon = Icons.Rounded.DeleteOutline)
+        }
     }
 }
 

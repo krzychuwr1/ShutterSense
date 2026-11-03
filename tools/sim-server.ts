@@ -21,10 +21,11 @@ button{margin:8px 8px 0 0;padding:8px 12px;border-radius:6px;border:1px solid #5
 <h1>Simulated camera</h1><img id="lv"><div id="scenes"></div><pre id="st"></pre>
 <script>
 const scenes=${JSON.stringify(SCENE_INFO.map(({ id, title }) => ({ id, title })))};
-for(const s of scenes){const b=document.createElement('button');b.textContent=s.title;b.onclick=()=>fetch('/sim/scene',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({id:s.id})});scenes_el.append(b)}
-async function tick(){try{const r=await fetch('/sim/frame?w=600');lv.src=URL.createObjectURL(await r.blob());const s=await (await fetch('/sim/status')).json();
-st.textContent=s.sceneTitle+'  ·  '+s.lens+'\n'+JSON.stringify(s.settings)+'\ncamera would use: '+s.exposure.av+' '+s.exposure.tv+' ISO '+s.exposure.isoValue+'\nshots: '+s.shots.length}catch{}setTimeout(tick,400)}
-var scenes_el=document.getElementById('scenes');tick();
+const scenesEl=document.getElementById('scenes');
+for(const s of scenes){const b=document.createElement('button');b.textContent=s.title;b.onclick=()=>fetch('/sim/scene',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({id:s.id})});scenesEl.append(b)}
+async function tick(){try{const r=await fetch('/sim/frame?w=600');const old=lv.src;lv.src=URL.createObjectURL(await r.blob());if(old)URL.revokeObjectURL(old);const s=await (await fetch('/sim/status')).json();
+st.textContent=s.sceneTitle+'  ·  '+s.lens+'\\n'+JSON.stringify(s.settings)+'\\ncamera would use: '+s.exposure.av+' '+s.exposure.tv+' ISO '+s.exposure.isoValue+'\\nshots: '+s.shots.length}catch{}setTimeout(tick,400)}
+tick();
 </script>`;
 
 const server = http.createServer(async (req, res) => {

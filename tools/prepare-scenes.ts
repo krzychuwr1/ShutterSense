@@ -23,6 +23,11 @@ if (!src) {
   console.error("usage: npm run prepare-scenes -- <dir> [scene ...]");
   process.exit(1);
 }
+const unknown = only.filter((s) => !(s in FILES));
+if (unknown.length) {
+  console.error(`unknown scene ${unknown.join(", ")}; scenes are ${Object.keys(FILES).join(", ")}`);
+  process.exit(1);
+}
 
 /** Area-weighted resize of premultiplied RGBA, one axis at a time. */
 function resize(data: Uint8Array, w: number, h: number, ow: number, oh: number): Uint8Array {

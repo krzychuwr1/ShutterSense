@@ -1,19 +1,14 @@
 // Thin client for the Meta Model API (Muse models).
 
+import type { AgentResponse, FunctionCall } from "../shared/agent-api.ts";
+
 const BASE = "https://api.meta.ai/v1";
 
 export const MODELS = {
   agent: "muse-wonder-1.0",
   transcribe: "muse-voice-transcribe-1.0",
+  image: "muse-image-1.0",
 };
-
-export interface FunctionCall { type: "function_call"; call_id: string; name: string; arguments: string }
-
-export interface ResponseResult {
-  calls: FunctionCall[];
-  text: string;
-  commentary: string;
-}
 
 /** An API failure with a message that is safe to show the user. */
 export class MuseError extends Error {
@@ -22,8 +17,16 @@ export class MuseError extends Error {
   }
 }
 
-async function check(res: Response, what: string): Promise<void> {
-  if (res.ok) return;
+/** fetch, with a timeout and failures turned into MuseErrors. */
+async function call(url: string, init: RequestInit, timeoutMs: number, what: string): Promise<Response> {
+  let res: Response;
+  try {
+    res = await fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+  } catch (e) {
+    if (e instanceof Error && e.name === "TimeoutError") throw new MuseError(`${what} timed out`, 504);
+    throw e;
+  }
+  if (res.ok) return res;
   let detail = "";
   try {
     const body = await res.json<{ error?: { message?: string } }>();
@@ -34,15 +37,13 @@ async function check(res: Response, what: string): Promise<void> {
   throw new MuseError(`${what} failed (${res.status})${detail ? `: ${detail}` : ""}`, res.status === 429 ? 429 : 502);
 }
 
-export async function createResponse(apiKey: string, body: Record<string, unknown>, signal?: AbortSignal): Promise<ResponseResult> {
-  const timeout = AbortSignal.timeout(90_000);
-  const res = await fetch(`${BASE}/responses`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-    signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
-  });
-  await check(res, "Agent call");
+export async function createResponse(apiKey: string, body: Record<string, unknown>): Promise<AgentResponse> {
+  const res = await call(
+    `${BASE}/responses`,
+    { method: "POST", headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" }, body: JSON.stringify(body) },
+    90_000,
+    "Agent call",
+  );
   const data = await res.json<{
     output?: Array<{ type: string; phase?: string; content?: Array<{ type: string; text?: string }> } & Partial<FunctionCall>>;
   }>();
@@ -51,7 +52,8 @@ export async function createResponse(apiKey: string, body: Record<string, unknow
   let commentary = "";
   for (const item of data.output ?? []) {
     if (item.type === "function_call") {
-      calls.push({ type: "function_call", call_id: item.call_id!, name: item.name!, arguments: item.arguments ?? "{}" });
+      if (!item.call_id || !item.name) continue;
+      calls.push({ type: "function_call", call_id: item.call_id, name: item.name, arguments: item.arguments ?? "{}" });
     } else if (item.type === "message") {
       let t = "";
       for (const c of item.content ?? []) if (c.type === "output_text" && c.text) t += c.text;
@@ -60,6 +62,52 @@ export async function createResponse(apiKey: string, body: Record<string, unknow
     }
   }
   return { calls, text: text.trim(), commentary: commentary.trim() };
+}
+
+/** The picture in an images API answer as a data URL (JPEG as asked; WebP or PNG if the model ignored that). */
+async function imageResult(res: Response): Promise<string> {
+  const data = await res.json<{ data?: Array<{ b64_json?: string | null; url?: string | null }> }>();
+  const first = data.data?.[0];
+  let b64 = first?.b64_json ?? "";
+  if (!b64 && first?.url?.startsWith("https://")) {
+    const img = await call(first.url, {}, 30_000, "Picture download");
+    const bytes = new Uint8Array(await img.arrayBuffer());
+    let bin = "";
+    for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+    b64 = btoa(bin);
+  }
+  if (!b64) throw new MuseError("The image model returned no picture");
+  // The file's first bytes in base64: FF D8 (JPEG), "RIFF" (WebP), else PNG.
+  const type = b64.startsWith("/9j/") ? "jpeg" : b64.startsWith("UklGR") ? "webp" : "png";
+  return `data:image/${type};base64,${b64}`;
+}
+
+/** A new picture from a prompt (images API). */
+export async function generateImage(apiKey: string, model: string, prompt: string): Promise<string> {
+  const res = await call(
+    `${BASE}/images/generations`,
+    {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ model, prompt, n: 1, response_format: "b64_json", output_format: "jpeg" }),
+    },
+    90_000,
+    "Picture",
+  );
+  return imageResult(res);
+}
+
+/** A JPEG changed as the prompt says (images API, edits). */
+export async function editImage(apiKey: string, model: string, jpeg: Uint8Array, prompt: string): Promise<string> {
+  const form = new FormData();
+  form.append("model", model);
+  form.append("prompt", prompt);
+  form.append("n", "1");
+  form.append("response_format", "b64_json");
+  form.append("output_format", "jpeg");
+  form.append("image", new Blob([jpeg], { type: "image/jpeg" }), "frame.jpg");
+  const res = await call(`${BASE}/images/edits`, { method: "POST", headers: { Authorization: `Bearer ${apiKey}` }, body: form }, 90_000, "Picture");
+  return imageResult(res);
 }
 
 export async function transcribe(apiKey: string, wav: ArrayBuffer): Promise<string> {
@@ -71,13 +119,12 @@ export async function transcribe(apiKey: string, wav: ArrayBuffer): Promise<stri
     }),
   );
   form.append("audio", new Blob([wav], { type: "audio/wav" }), "speech.wav");
-  const res = await fetch(`${BASE}/asr/transcribe`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" },
-    body: form,
-    signal: AbortSignal.timeout(60_000),
-  });
-  await check(res, "Transcription");
+  const res = await call(
+    `${BASE}/asr/transcribe`,
+    { method: "POST", headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" }, body: form },
+    60_000,
+    "Transcription",
+  );
   const data = await res.json<{ transcript?: string }>();
   return (data.transcript ?? "").trim();
 }

@@ -24,8 +24,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowForward
+import androidx.compose.material.icons.automirrored.rounded.HelpOutline
 import androidx.compose.material.icons.rounded.AutoAwesome
-import androidx.compose.material.icons.rounded.HelpOutline
 import androidx.compose.material.icons.rounded.Wifi
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -56,7 +56,7 @@ fun ChooseScreen(vm: AppViewModel) {
         Column(Modifier.widthIn(max = 520.dp).fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp)) {
             Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text("Shutter Sense", style = MaterialTheme.typography.titleMedium, color = Palette.Text, modifier = Modifier.weight(1f))
-                RoundIcon(Icons.Rounded.HelpOutline, "How it works", { vm.openWelcome() }, tint = Palette.Muted)
+                RoundIcon(Icons.AutoMirrored.Rounded.HelpOutline, "How it works", { vm.openWelcome() }, tint = Palette.Muted)
             }
             Spacer(Modifier.height(40.dp))
             Text("How do you want to start?", style = MaterialTheme.typography.displaySmall, color = Palette.Text)

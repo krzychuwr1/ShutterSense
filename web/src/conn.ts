@@ -20,7 +20,7 @@ export class RoomConn {
   private wsEverOpened = false;
   private outbox: ClientMessage[] = [];
   private query: string;
-  state: ConnState = "connecting";
+  private closed = false;
 
   constructor(
     private code: string,
@@ -28,6 +28,8 @@ export class RoomConn {
     private onMessage: (m: ServerMessage) => void,
     private onState: (s: ConnState) => void = () => {},
     token: string,
+    /** The session no longer exists (it expires when idle): the connection has given up. */
+    private onGone?: () => void,
   ) {
     this.query = `role=${role}&token=${encodeURIComponent(token)}`;
     const forced = new URLSearchParams(location.search).get("transport");
@@ -42,11 +44,24 @@ export class RoomConn {
 
   start() {
     this.connect();
-    window.addEventListener("online", () => this.reconnectNow());
-    document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState === "visible") this.reconnectNow();
-    });
+    window.addEventListener("online", this.onOnline);
+    document.addEventListener("visibilitychange", this.onVisible);
   }
+
+  /** Leaves the room for good: no more messages, state changes or reconnects. */
+  close() {
+    this.closed = true;
+    window.removeEventListener("online", this.onOnline);
+    document.removeEventListener("visibilitychange", this.onVisible);
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
+    this.teardown();
+  }
+
+  private onOnline = () => this.reconnectNow();
+  private onVisible = () => {
+    if (document.visibilityState === "visible") this.reconnectNow();
+  };
 
   send(msg: ClientMessage) {
     if (this.mode === "ws") {
@@ -62,11 +77,6 @@ export class RoomConn {
       (res) => res.status >= 500 && this.outbox.push(msg),
       () => this.outbox.push(msg),
     );
-  }
-
-  private setState(s: ConnState) {
-    this.state = s;
-    this.onState(s);
   }
 
   private connect() {
@@ -88,7 +98,7 @@ export class RoomConn {
 
   private openWs() {
     this.teardown();
-    this.setState("connecting");
+    this.onState("connecting");
     const proto = location.protocol === "https:" ? "wss" : "ws";
     let ws: WebSocket;
     try {
@@ -112,9 +122,11 @@ export class RoomConn {
       this.wsEverOpened = true;
       this.retry = 0;
       clearTimeout(openTimeout);
-      this.setState("online");
+      this.onState("online");
       for (const m of this.outbox.splice(0)) ws.send(JSON.stringify(m));
       ping = setInterval(() => {
+        // Torn down (its onclose is detached, so it can't clear this itself).
+        if (this.ws !== ws) return clearInterval(ping!);
         if (Date.now() - lastSeen > SILENCE_LIMIT) return ws.close(); // half-open link
         ws.send("ping");
       }, PING_EVERY);
@@ -152,12 +164,12 @@ export class RoomConn {
 
   private openSse() {
     this.teardown();
-    this.setState("connecting");
+    this.onState("connecting");
     const es = new EventSource(`/api/rooms/${this.code}/events?${this.query}`);
     this.es = es;
     es.onopen = () => {
       this.retry = 0;
-      this.setState("online");
+      this.onState("online");
       for (const m of this.outbox.splice(0)) this.send(m);
     };
     es.onmessage = (e) => {
@@ -176,18 +188,24 @@ export class RoomConn {
   }
 
   private scheduleReconnect() {
-    this.setState(navigator.onLine ? "connecting" : "offline");
+    if (this.closed) return;
+    this.onState(navigator.onLine ? "connecting" : "offline");
     if (this.reconnectTimer) return;
     const delay = Math.min(10_000, 500 * 2 ** this.retry++);
-    this.reconnectTimer = setTimeout(() => {
+    this.reconnectTimer = setTimeout(async () => {
+      // After a few failures in a row, check that the session still exists.
+      if (this.retry >= 3 && this.onGone && !(await roomExists(this.code).catch(() => true))) {
+        this.close();
+        return this.onGone();
+      }
       this.reconnectTimer = null;
-      this.connect();
+      if (!this.closed && !this.ws && !this.es) this.connect();
     }, delay);
   }
 
   /** Reconnect immediately, but only if nothing is open or opening. */
   private reconnectNow() {
-    if (this.ws || this.es) return;
+    if (this.closed || this.ws || this.es) return;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
     this.retry = 0;

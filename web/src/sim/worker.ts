@@ -3,28 +3,10 @@
 
 import { VirtualCamera } from "../../../camsim/camera.ts";
 import { handleSim } from "../../../camsim/control.ts";
-import type { RgbaImage } from "../../../camsim/scenes.ts";
+import { encodeJpeg, imageLoader } from "./codec.ts";
 
-async function encodeJpeg(rgba: Uint8ClampedArray, w: number, h: number, quality: number): Promise<Uint8Array> {
-  const canvas = new OffscreenCanvas(w, h);
-  const ctx = canvas.getContext("2d")!;
-  ctx.putImageData(new ImageData(new Uint8ClampedArray(rgba), w, h), 0, 0);
-  const blob = await canvas.convertToBlob({ type: "image/jpeg", quality });
-  return new Uint8Array(await blob.arrayBuffer());
-}
-
-/** Scene images from the site: decoded without colour management, alpha not premultiplied. */
-async function loadImage(path: string): Promise<RgbaImage> {
-  const res = await fetch(`/${path}`);
-  if (!res.ok) throw new Error(`${path}: HTTP ${res.status}`);
-  const bitmap = await createImageBitmap(await res.blob(), { premultiplyAlpha: "none", colorSpaceConversion: "none" });
-  const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
-  const ctx = canvas.getContext("2d")!;
-  ctx.drawImage(bitmap, 0, 0);
-  const data = ctx.getImageData(0, 0, bitmap.width, bitmap.height).data;
-  return { w: bitmap.width, h: bitmap.height, data };
-}
-
+// Scene images come from the site's root (web/public/scenes).
+const loadImage = imageLoader(new URL("/", location.href).href);
 const camera = VirtualCamera.create({ encodeJpeg, now: () => performance.now(), loadImage }, "concert");
 
 self.onmessage = async (e: MessageEvent<{ id: number; method: string; path: string; body?: unknown }>) => {

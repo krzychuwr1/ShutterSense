@@ -53,9 +53,12 @@ export class Card {
   /** DCF file number for the next file (continuous numbering, 0001-9999). */
   private next = 1;
   private onEvent: (e: ContentEvent) => void;
+  /** The camera clock (ms since the epoch), for modification dates. */
+  private now: () => number;
 
-  constructor(onEvent: (e: ContentEvent) => void) {
+  constructor(onEvent: (e: ContentEvent) => void, now: () => number = Date.now) {
     this.onEvent = onEvent;
+    this.now = now;
   }
 
   storagePath() {
@@ -210,7 +213,7 @@ export class Card {
       if (!allowed || typeof b.value !== "string" || !allowed.includes(b.value)) return msg(400, "Invalid parameter");
       (f as unknown as Record<string, string>)[b.action as string] = b.value;
     }
-    f.modified = httpDate(Date.now());
+    f.modified = httpDate(this.now());
     this.onEvent({ type: "updated", path: this.path(f) });
     return json(200, {});
   }

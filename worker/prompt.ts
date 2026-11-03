@@ -18,6 +18,10 @@ How to work
 
 Settings you can't change yourself: call menu_steps (only when it really matters for this goal; one setting per call) with the setting's name exactly as listed under "Camera menus" below and the value to choose. The app then shows the photographer the camera's real menu screens, page by page, down to that value, and waits until they have set it. Only use it for settings get_camera_state doesn't offer. For a setting that isn't listed, give your own steps instead; they are shown as unverified, so do that only when it clearly matters.
 
+Presets: when the photographer asks to save or remember the current setup ("save this as club night"), call save_preset with a short name and a note on what it is for; it stores the camera's current values. Include in menu any settings you had them set by hand during this run that belong to the look (e.g. HDR Mode). When they ask for a saved preset by name, or a goal clearly matches one listed under "Saved presets", call apply_preset, then guide any hand-set menu settings it returns with menu_steps, and check the result with look or a shot as usual. Never invent a preset that isn't listed.
+
+Ideas: when the photographer asks for ideas, poses, inspiration or "what else could we try", call show_ideas with two to four distinct ideas. If they point the camera at something (people, a place) and want ideas for it, call look first and set from_camera true: each picture is the live view re-imagined, same people and place, new pose or arrangement, so make the ideas fit what you see (the light, the space, how many people). For general inspiration ("ideas for a beach engagement shoot") set from_camera false and describe complete pictures. Each idea gets a short title, a direction you'd say to the people ("Lean on the tree, weight on the back foot, look past the camera"), and a prompt for the picture: for from_camera only the change in pose and arrangement, otherwise the whole picture (people, pose, setting, light, framing). Don't shoot for ideas unless asked; after show_ideas, finish with a one-line summary, or help with the settings for the idea they pick.
+
 Use tell_user for short progress notes the photographer sees on the phone and the glasses lens (under 70 characters, e.g. "LED flicker found: HF anti-flicker on, 1/1307 s"). Do not narrate every step. Use ask_user only when the goal is genuinely ambiguous or a trade-off needs their call; give two to four short options.
 
 Messages that start with [Photographer] are corrections they sent while you work (for example "a bit warmer"). Apply them to the next shot.
@@ -35,6 +39,7 @@ Camera know-how
 - Electronic shutter is silent but skews fast motion and can't use flash.
 - Fine-tuning: style_detail adjusts the current picture style's contrast, saturation, sharpness and colour tone (ranges are in get_camera_state); wbshift nudges colour (ba: + amber / - blue, mg: + magenta / - green) on top of white balance. Change the aspect ratio only if the photographer asks for a crop.
 - Flicker: fluorescent and many LED lights pulse at twice the mains frequency (100 Hz in 50 Hz countries, 120 Hz in 60 Hz countries). At shutter speeds faster than about 1/100 s, shots come out brighter or darker and shift in colour from frame to frame, and the electronic shutter shows dark bands. Fixes: antiflickershoot "enable" (the camera fires at the brightest moment), the mechanical shutter instead of the electronic one, or a shutter speed that's a whole number of flicker periods (1/100 or 1/50 at 100 Hz; 1/120 or 1/60 at 120 Hz). LED panels that flicker much faster cause bands at fast speeds, worst with the electronic shutter: call detect_flicker with kind "high_frequency" (it enables HF anti-flicker and lets the camera pick hfflickertv, a speed spanning whole LED periods), then shoot in Tv or M. If you suspect flicker but aren't sure which kind, detect_flicker with kind "mains" tells you.
+- Dynamic range: when the parts that matter are far apart in brightness (a face in deep shade against a sunlit background, a room and its bright window, a landscape with a deep shadow and a bright sky), no single exposure holds both: the shot has clipped highlights and crushed shadows at once, and moving the exposure only trades one for the other. If flash can't light the dark part (it's far away, a landscape, or the photographer wants natural light), the fix is HDR Mode: the camera merges three exposures into one JPEG. The control API can't switch it on, so call menu_steps with setting "HDR Mode" and value "Auto" (or ±2 / ±3 EV for extreme scenes), tell them to hold steady (moving subjects can ghost), then shoot to check. Meter for the midtones (evaluative, no compensation). Highlight tone priority only saves about one stop of highlights, so it's for mild cases.
 - Mood: "moody" usually means darker exposure (-⅔ to -1⅓ EV), deeper contrast, cooler or richer colour; "bright and airy" means +⅔ to +1 EV and neutral-to-warm colour.
 
 Be decisive. Change several settings at once when the problem needs it. Never touch anything you were not given.`;
@@ -53,6 +58,9 @@ export function buildInstructions(ctx: AgentContext): string {
     `- Test shots used: ${ctx.shotsTaken} of ${ctx.maxShots} (${left} left).${left === 0 ? " No shots left: call finish now with the best result so far." : ""}`,
     ctx.askBeforeShooting ? "- The photographer approves each shot on the phone; a declined shot returns an error, don't retry it without changing something." : "",
     ctx.glasses ? "- The photographer wears smart glasses: tell_user and ask_user show on the lens, so keep them short." : "",
+    "",
+    "Saved presets (for apply_preset)",
+    ctx.presets?.length ? ctx.presets.map((p) => `- ${p.name}${p.note ? ` (${p.note})` : ""}: ${p.settings}`).join("\n") : "- none yet",
   ];
   return lines.filter((l) => l !== "").join("\n");
 }
@@ -169,7 +177,7 @@ export const TOOLS = [
     type: "function",
     name: "menu_steps",
     description:
-      "For a setting the camera's API can't change: show the photographer the way through the camera's own menus (drawn from the camera's manual), on the phone and the glasses, and wait until they say it's done (or skip it).",
+      "For a setting the camera's API can't change: show the photographer the way through the camera's own menus, on the phone and the glasses, and wait until they say it's done (or skip it).",
     parameters: {
       type: "object",
       properties: {
@@ -183,6 +191,76 @@ export const TOOLS = [
         },
       },
       required: ["setting", "value", "why"],
+      additionalProperties: false,
+    },
+  },
+  {
+    type: "function",
+    name: "save_preset",
+    description:
+      "Save the camera's current settings as a named preset on the photographer's phone, to apply later. Saving under an existing name replaces it.",
+    parameters: {
+      type: "object",
+      properties: {
+        name: str('Short name, e.g. "Club night" or "Kids indoors".'),
+        note: str("One line: what the preset is for."),
+        keys: {
+          type: "array",
+          items: { type: "string" },
+          description: "Only these settings (names as in get_camera_state). Omit to save every setting you may change.",
+        },
+        menu: {
+          type: "array",
+          description: "Settings set by hand in the camera's menus that belong to this look, as used with menu_steps.",
+          items: {
+            type: "object",
+            properties: { setting: str("As in menu_steps."), value: str("As in menu_steps.") },
+            required: ["setting", "value"],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ["name", "note"],
+      additionalProperties: false,
+    },
+  },
+  {
+    type: "function",
+    name: "apply_preset",
+    description:
+      'Apply one of the photographer\'s saved presets (listed under "Saved presets") to the camera. Returns what changed, what the camera rejected in its current mode, and any settings to guide by hand with menu_steps.',
+    parameters: {
+      type: "object",
+      properties: { name: str("The preset's name as listed.") },
+      required: ["name"],
+      additionalProperties: false,
+    },
+  },
+  {
+    type: "function",
+    name: "show_ideas",
+    description:
+      "Show the photographer pictures of two to four ideas for the shot (poses, arrangements, compositions, angles) on the phone and the glasses. Pictures are generated, which takes a little while.",
+    parameters: {
+      type: "object",
+      properties: {
+        from_camera: { type: "boolean", description: "Re-imagine the current live view (same people and place). False for general inspiration from the prompt alone." },
+        ideas: {
+          type: "array",
+          description: "Two to four distinct ideas.",
+          items: {
+            type: "object",
+            properties: {
+              title: str('A few words, e.g. "Walk towards me".'),
+              direction: str("What to tell the people (or where to stand), under 100 characters."),
+              prompt: str("The picture: with from_camera only the change in pose and arrangement; otherwise the whole scene, people, pose, light and framing."),
+            },
+            required: ["title", "direction", "prompt"],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ["from_camera", "ideas"],
       additionalProperties: false,
     },
   },

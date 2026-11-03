@@ -7,6 +7,10 @@ import dev.shuttersense.app.ccapi.CcapiException
 import dev.shuttersense.app.ccapi.SettingException
 import dev.shuttersense.app.ccapi.SettingItem
 import dev.shuttersense.app.ccapi.Settings
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
@@ -16,6 +20,8 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.put
+import dev.shuttersense.app.glasses.IDEA_IMAGE_BYTES
+import java.util.Base64
 import kotlin.math.roundToInt
 
 // The agent's camera tools on the CCAPI client: what get_camera_state, look,
@@ -33,8 +39,21 @@ val AGENT_SETTINGS = listOf(
 /** Picture style fine-tuning the agent may change (on the current style). */
 val STYLE_DETAIL_FIELDS = listOf("contrast", "saturation", "sharpness_strength", "colortone")
 
+/**
+ * Set first, with a refresh after each: the mode, shutter type and ISO change
+ * which other settings are available (flash needs the mechanical shutter),
+ * and the picture style decides which style style_detail fine-tunes.
+ */
+private val LEADING_SETTINGS = listOf("shootingmode", "shuttermode", "iso", "picturestyle")
+
 /** Settings a mode can hand over to the camera, so "unchangeable" means "the camera picks it". */
-private val EXPOSURE_KEYS = setOf("av", "tv", "iso", "exposure")
+private val EXPOSURE_KEYS = listOf("av", "tv", "iso", "exposure")
+
+/** The camera-chosen exposure values (effective_value_*) an event reports. */
+private fun effectiveValues(ev: JsonObject): Map<String, String> = EXPOSURE_KEYS.mapNotNull { k ->
+    val v = ((ev["effective_value_$k"] as? JsonObject)?.get("value") as? JsonPrimitive)
+    if (v != null && v.isString && v.content.isNotEmpty()) k to v.content else null
+}.toMap()
 
 /** Long side of images sent to the model. */
 const val MODEL_IMAGE_SIDE = 768
@@ -62,6 +81,8 @@ class CameraTools(val client: CcapiClient, private val images: ImageTools) {
         client.discover()
         try {
             client.deviceInfo()["productname"]?.takeIf { it.isNotEmpty() }?.let { model = it }
+        } catch (e: CancellationException) {
+            throw e
         } catch (_: Exception) {
             // optional
         }
@@ -81,16 +102,15 @@ class CameraTools(val client: CcapiClient, private val images: ImageTools) {
     fun cameraChosen(key: String): String? = effective[key]
 
     private fun absorb(ev: JsonObject) {
-        for (k in listOf("av", "tv", "iso", "exposure")) {
-            val v = ((ev["effective_value_$k"] as? JsonObject)?.get("value") as? JsonPrimitive)
-            if (v != null && v.isString && v.content.isNotEmpty()) effective[k] = v.content
-        }
+        effective.putAll(effectiveValues(ev))
     }
 
     /** Reads pending events so later waits only see new ones. */
     suspend fun drainEvents() {
         try {
             absorb(client.poll("immediately"))
+        } catch (e: CancellationException) {
+            throw e
         } catch (_: Exception) {
             // cameras without polling still work, minus effective values
         }
@@ -102,9 +122,14 @@ class CameraTools(val client: CcapiClient, private val images: ImageTools) {
         return settings
     }
 
-    /** "Av · f/2.8 · 1/1000 s · ISO 1600 (auto) · +1 EV", using camera-chosen values where the mode picks them. */
-    fun exposureLine(s: Settings = settings): String {
+    /**
+     * "Av · f/2.8 · 1/1000 s · ISO 1600 (auto) · +1 EV", using camera-chosen values where
+     * the mode picks them. [used] holds what a shot reported it actually used (flash caps
+     * the shutter at the sync speed, say), which wins.
+     */
+    fun exposureLine(s: Settings = settings, used: Map<String, String> = emptyMap()): String {
         fun v(k: String): String {
+            used[k]?.let { return it }
             val own = s[k]?.text
             return if (!own.isNullOrEmpty()) own else effective[k] ?: ""
         }
@@ -114,9 +139,10 @@ class CameraTools(val client: CcapiClient, private val images: ImageTools) {
         val parts = mutableListOf(
             CameraValues.prettyValue("shootingmode", mode),
             CameraValues.prettyValue("av", v("av")),
-            CameraValues.prettyValue("tv", hfTv.ifEmpty { v("tv") }),
+            CameraValues.prettyValue("tv", used["tv"] ?: hfTv.ifEmpty { v("tv") }),
         )
-        val iso = if (s["iso"]?.text == "auto" && effective["iso"] != null) "ISO ${effective["iso"]} (auto)" else CameraValues.prettyValue("iso", v("iso"))
+        val autoIso = if (s["iso"]?.text == "auto") used["iso"] ?: effective["iso"] else null
+        val iso = if (autoIso != null) "ISO $autoIso (auto)" else CameraValues.prettyValue("iso", v("iso"))
         parts.add(iso)
         val ev = s["exposure"]?.text
         if (!ev.isNullOrEmpty() && ev != "+0.0") parts.add(CameraValues.prettyValue("exposure", ev))
@@ -161,6 +187,8 @@ class CameraTools(val client: CcapiClient, private val images: ImageTools) {
                         ability?.get(f)?.let { put("range", it.toJson()) }
                     }
                 })
+            } catch (e: CancellationException) {
+                throw e
             } catch (_: Exception) {
                 // not every style or camera exposes fine-tuning
             }
@@ -175,8 +203,50 @@ class CameraTools(val client: CcapiClient, private val images: ImageTools) {
         }.toString()
     }
 
-    private fun modeChangeable() =
+    /** Whether the shooting mode can be set remotely (not only by the mode dial). */
+    fun modeChangeable() =
         client.has("shooting/settings/shootingmode", "put") || client.has("shooting/settings/shootingmodedial", "put")
+
+    /**
+     * The current value of every setting the agent may change (or only [keys]),
+     * for a preset. Settings the camera picks itself or can't change now are left out.
+     */
+    suspend fun snapshot(keys: List<String>? = null): JsonObject {
+        val s = refresh()
+        val out = linkedMapOf<String, JsonElement>()
+        for (key in AGENT_SETTINGS) {
+            if (keys != null && key !in keys) continue
+            val item = (if (key == "shootingmode") s["shootingmode"] ?: s["shootingmodedial"] else s[key]) ?: continue
+            val v = item.value
+            if (v is JsonNull || (v is JsonPrimitive && v.isString && v.content.isEmpty())) continue
+            if (if (key == "shootingmode") !modeChangeable() else !item.changeable) continue
+            out[key] = v
+        }
+        val style = s["picturestyle"]?.text.orEmpty()
+        if (style.isNotEmpty() && (keys == null || "style_detail" in keys)) {
+            try {
+                val value = client.pictureStyleDetail(style).value as? JsonObject
+                val detail = STYLE_DETAIL_FIELDS.mapNotNull { f ->
+                    val n = value?.get(f) as? JsonPrimitive
+                    if (n != null && !n.isString && n.doubleOrNull != null) f to n else null
+                }.toMap()
+                if (detail.isNotEmpty()) out["style_detail"] = JsonObject(detail)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                // no fine-tuning on this style or camera
+            }
+        }
+        return JsonObject(out)
+    }
+
+    /** An idea picture from the image model (a PNG or JPEG data URL) as a small JPEG data URL that fits a HUD update. */
+    suspend fun ideaPicture(dataUrl: String, side: Int): String {
+        val bytes = Base64.getMimeDecoder().decode(dataUrl.substringAfter(','))
+        val img = images.prepare(bytes, side, 0.7)
+        if (img.dataUrl.length <= IDEA_IMAGE_BYTES) return img.dataUrl
+        return images.prepare(bytes, (side * 0.7).roundToInt(), 0.55).dataUrl
+    }
 
     /** A live-view frame; [zoom] (5 or 10) magnifies around the AF point to check focus, then zooms back out. */
     suspend fun look(zoom: Int? = null): Pair<String, PreparedImage> {
@@ -185,6 +255,8 @@ class CameraTools(val client: CcapiClient, private val images: ImageTools) {
             try {
                 client.set("lvzoom", zoom.toString())
                 zoomed = true
+            } catch (e: CancellationException) {
+                throw e
             } catch (_: Exception) {
                 // no magnified live view on this camera: plain frame
             }
@@ -192,7 +264,10 @@ class CameraTools(val client: CcapiClient, private val images: ImageTools) {
         val jpeg = try {
             client.liveFrame()
         } finally {
-            if (zoomed) runCatching { client.set("lvzoom", "1") }
+            // Also when cancelled: live view mustn't stay magnified. Best effort, and bounded.
+            if (zoomed) withContext(NonCancellable) {
+                runCatching { withTimeoutOrNull(5_000) { client.set("lvzoom", "1") } }
+            }
         }
         val image = images.prepare(jpeg, MODEL_IMAGE_SIDE, 0.8)
         drainEvents()
@@ -266,12 +341,13 @@ class CameraTools(val client: CcapiClient, private val images: ImageTools) {
     class SetResult(val applied: List<String>, val errors: List<String>)
 
     /**
-     * Applies changes in a safe order (mode first, so the other settings are
-     * judged in the new mode). Each change is validated against the camera's
-     * current options; failures don't stop the rest.
+     * Applies changes in a safe order: the settings that change what else is
+     * available come first, so the rest are judged against the new options.
+     * Each change is validated against the camera's current options; failures
+     * don't stop the rest.
      */
     suspend fun set(changes: Map<String, JsonElement>): SetResult {
-        val order = listOf("shootingmode", "iso") + AGENT_SETTINGS.filter { it != "shootingmode" && it != "iso" }
+        val order = LEADING_SETTINGS + AGENT_SETTINGS.filter { it !in LEADING_SETTINGS }
         val keys = order.filter { k -> changes[k].let { it != null && it !is JsonNull } }
         val applied = mutableListOf<String>()
         val errors = mutableListOf<String>()
@@ -285,7 +361,11 @@ class CameraTools(val client: CcapiClient, private val images: ImageTools) {
                     null
                 } ?: continue
                 val cur = item?.fields ?: emptyMap()
-                fun field(f: String) = (v[f] as? JsonPrimitive)?.doubleOrNull?.roundToInt() ?: (cur[f] as? Number)?.toInt() ?: 0
+                // Left out keeps the current shift; a value that isn't a number is NaN, which validation rejects.
+                fun field(f: String): Number = when (val x = v[f]) {
+                    null, is JsonNull -> (cur[f] as? Number)?.toInt() ?: 0
+                    else -> (x as? JsonPrimitive)?.doubleOrNull?.takeIf { it.isFinite() }?.roundToInt() ?: Double.NaN
+                }
                 value = mapOf("ba" to field("ba"), "mg" to field("mg"))
             } else {
                 val raw = changes[key] as? JsonPrimitive ?: run {
@@ -301,8 +381,7 @@ class CameraTools(val client: CcapiClient, private val images: ImageTools) {
             try {
                 client.set(key, value, if (key == "shootingmode") null else item)
                 applied.add(CameraValues.diffLine(key, if (before == "") effective[key] ?: "auto" else before, value))
-                // Mode and ISO change which other settings are available.
-                if (key == "shootingmode" || key == "iso" || key == "shuttermode") s = refresh()
+                if (key in LEADING_SETTINGS) s = refresh()
             } catch (e: SettingException) {
                 errors.add(e.message ?: "$key was rejected")
             } catch (e: CcapiException) {
@@ -334,13 +413,27 @@ class CameraTools(val client: CcapiClient, private val images: ImageTools) {
     suspend fun shoot(af: Boolean, n: Int): ShotResult {
         drainEvents()
         val before = settings
+        // The first camera-chosen values after the press are the ones the shot
+        // used (with the new file, or just after it); later ones are the live
+        // meter again.
+        val used = mutableMapOf<String, String>()
+        fun seen(ev: JsonObject) {
+            absorb(ev)
+            for ((k, v) in effectiveValues(ev)) used.putIfAbsent(k, v)
+        }
         client.shutter(af)
-        val path = client.waitForNewFile(20_000) { absorb(it) }
+        val path = client.waitForNewFile(20_000) { seen(it) }
         val jpeg = client.download(path, "display")
         val image = images.prepare(jpeg, MODEL_IMAGE_SIDE, 0.82)
         val thumb = images.prepare(jpeg, THUMB_SIDE, 0.6).dataUrl
-        drainEvents()
-        return ShotResult(n, jpeg, image, thumb, exposureLine(before), before)
+        try {
+            seen(client.poll("immediately"))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            // cameras without polling: the settings stand in
+        }
+        return ShotResult(n, jpeg, image, thumb, exposureLine(before, used), before)
     }
 }
 

@@ -26,3 +26,17 @@ export function h(html: string): HTMLElement {
   t.innerHTML = html.trim();
   return t.content.firstElementChild as HTMLElement;
 }
+
+/** A photo over the whole page; a click or Escape closes it. `onClose` can release the image's object URL. */
+export function lightbox(src: string, onClose?: () => void) {
+  const box = el("div", { class: "lightbox", role: "dialog", "aria-label": "Photo" }, [el("img", { src, alt: "" })]);
+  const close = () => {
+    box.remove();
+    document.removeEventListener("keydown", onKey);
+    onClose?.();
+  };
+  const onKey = (e: KeyboardEvent) => e.key === "Escape" && close();
+  box.addEventListener("click", close);
+  document.addEventListener("keydown", onKey);
+  document.body.append(box);
+}

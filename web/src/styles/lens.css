@@ -66,6 +66,12 @@ body.glasses-body #app {
 .hud-media { display: flex; gap: 14px; align-items: flex-start; min-height: 0; }
 .hud-media img { width: 300px; height: 200px; object-fit: cover; border-radius: 10px; flex: none; }
 .hud-media.small img { width: 200px; height: 133px; }
+.hud-idea { display: flex; gap: 14px; align-items: flex-start; min-height: 0; }
+.hud-idea img { width: 260px; height: 195px; object-fit: cover; border-radius: 10px; flex: none; }
+.hud-idea-text { display: grid; gap: 8px; font-size: 19px; line-height: 1.3; color: var(--l-soft); min-width: 0; }
+.hud-idea-title { color: var(--l-accent); font-weight: 700; font-size: 21px; }
+.hud-idea-title span { color: var(--l-soft); font-weight: 500; font-size: 17px; }
+.hud-idea .hud-options button { font-size: 19px; padding: 6px 12px; }
 .hud-diff { display: grid; gap: 6px; font-size: 20px; color: var(--l-soft); font-variant-numeric: tabular-nums; }
 .hud-diff > div:not(.hud-msg) { color: var(--l-accent); }
 .hud-msg { color: var(--l-text); font-weight: 600; }

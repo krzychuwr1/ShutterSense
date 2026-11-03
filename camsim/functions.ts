@@ -228,7 +228,7 @@ export class CameraFunctions {
     if (sub in this.text) {
       const field = sub.split("/").pop()!;
       if (method === "GET") return ok({ [field]: this.text[sub] });
-      if (busy && method !== "GET") return msg(503, busy);
+      if (busy) return msg(503, busy);
       if (method === "PUT") {
         const v = body[field];
         if (typeof v !== "string" || !textRules[sub].test(v)) return INVALID;

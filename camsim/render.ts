@@ -19,7 +19,7 @@ const READ_NOISE = 4;
 const MAX_BLUR_SIGMA = 40;
 
 export interface RenderOpts {
-  /** Output width; the scene width divided by 1, 2, 4 or 8. */
+  /** Output width; rendered at the scene width divided by the nearest whole number. */
   w: number;
   /** f-number, seconds, ISO. */
   N: number;
@@ -53,6 +53,12 @@ export interface RenderOpts {
   focusStack?: number[];
   /** Also return the sensor data (after exposure and noise, before white balance). */
   linear?: boolean;
+  /**
+   * HDR Mode (set by hand in the camera's menus): three exposures merged
+   * into one. "auto" fits the scene's range; a number is the bracket in
+   * stops (1-3). Without it, one ordinary exposure.
+   */
+  hdr?: "auto" | number;
   /** Scene clock in seconds: where moving subjects are. */
   time: number;
   /** Blur moving subjects over the exposure time. */
@@ -429,6 +435,10 @@ export function render(scene: Scene, o: RenderOpts): Rendered {
   // Glow around anything far over saturation (sun, flames, bare bulbs).
   bloom(rgb, w, h);
 
+  // HDR: the merged brackets hold highlights and shadows that one frame can't.
+  // Merging before the noise: lifted shadows come from the brighter frame.
+  if (o.hdr) mergeHdr(rgb, w, h, o.hdr);
+
   // Shot noise and read noise, larger at higher ISO; mostly luminance, some chroma.
   const gain = o.iso / 100 / FULL_WELL;
   const read = READ_NOISE * gain;
@@ -525,6 +535,64 @@ export function wbGains(light: RGB, shift?: { ba: number; mg: number }): RGB {
     b /= y;
   }
   return [r, g, b];
+}
+
+/** Coarse grid step for the HDR merge's local brightness, in pixels at full size. */
+const HDR_CELL = 8;
+
+/**
+ * What the camera's HDR merge does, as a local tone map: the brightness of
+ * each region (a heavily blurred log luminance) is pulled towards mid-grey,
+ * so a sunlit field and a face in deep shade both land in range, while the
+ * detail within each region is kept. A bracket of n stops compresses by
+ * 1 / (1 + 0.3 n); "auto" fits the scene's range into about four stops.
+ * Like the real thing, it leaves a soft glow at hard light/shade edges.
+ */
+function mergeHdr(rgb: Float32Array, w: number, h: number, hdr: "auto" | number) {
+  const cell = Math.max(1, Math.round((HDR_CELL * w) / 1200));
+  const gw = Math.ceil(w / cell);
+  const gh = Math.ceil(h / cell);
+  // Mean log luminance per cell, in the first plane of an RGBA buffer for the blur.
+  const grid = new Float32Array(gw * gh * 4);
+  const count = new Float32Array(gw * gh);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const p = y * w + x;
+      const l = Math.log2(Math.max(1e-5, 0.2126 * rgb[p * 3] + 0.7152 * rgb[p * 3 + 1] + 0.0722 * rgb[p * 3 + 2]));
+      const g = Math.floor(y / cell) * gw + Math.floor(x / cell);
+      grid[g * 4] += l;
+      count[g]++;
+    }
+  }
+  for (let g = 0; g < gw * gh; g++) {
+    grid[g * 4] /= count[g] || 1;
+    grid[g * 4 + 3] = 1;
+  }
+  gaussian(grid, gw, gh, 4);
+  let c: number;
+  if (hdr === "auto") {
+    const sorted = Array.from({ length: gw * gh }, (_, g) => grid[g * 4]).sort((a, b) => a - b);
+    const range = sorted[Math.floor(sorted.length * 0.98)] - sorted[Math.floor(sorted.length * 0.02)];
+    c = Math.min(1, Math.max(0.4, 4 / Math.max(range, 1e-3)));
+  } else c = 1 / (1 + 0.3 * Math.min(3, Math.max(1, hdr)));
+  const anchor = Math.log2(0.18);
+  const at = (gx: number, gy: number) => grid[(Math.min(gh - 1, Math.max(0, gy)) * gw + Math.min(gw - 1, Math.max(0, gx))) * 4];
+  for (let y = 0; y < h; y++) {
+    const fy = (y + 0.5) / cell - 0.5;
+    const y0 = Math.floor(fy);
+    const ty = fy - y0;
+    for (let x = 0; x < w; x++) {
+      const fx = (x + 0.5) / cell - 0.5;
+      const x0 = Math.floor(fx);
+      const tx = fx - x0;
+      const base = (at(x0, y0) * (1 - tx) + at(x0 + 1, y0) * tx) * (1 - ty) + (at(x0, y0 + 1) * (1 - tx) + at(x0 + 1, y0 + 1) * tx) * ty;
+      const p = y * w + x;
+      const gain = 2 ** ((anchor - base) * (1 - c));
+      rgb[p * 3] *= gain;
+      rgb[p * 3 + 1] *= gain;
+      rgb[p * 3 + 2] *= gain;
+    }
+  }
 }
 
 /** Linear value to an encoded 0..1 value with a contrast curve around mid-grey. */

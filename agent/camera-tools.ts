@@ -4,6 +4,7 @@
 // injected (canvas in the browser, Bitmap on Android).
 
 import { AGENT_SETTINGS, STYLE_DETAIL_FIELDS } from "../shared/agent-api.ts";
+import { IDEA_IMAGE_BYTES } from "../shared/protocol.ts";
 import { diffLine, prettyValue } from "../shared/settings.ts";
 import { CcapiClient, CcapiError, isComposite, SettingError, type AnySettingItem, type SettingItem, type Settings } from "../ccapi/client.ts";
 
@@ -25,7 +26,7 @@ export interface PreparedImage {
 }
 
 export interface ImageTools {
-  /** Downscales a JPEG so its long side is at most `maxSide`, re-encodes it, and measures it. */
+  /** Downscales a JPEG (or PNG) so its long side is at most `maxSide`, re-encodes it as JPEG, and measures it. */
   prepare(jpeg: Uint8Array, maxSide: number, quality?: number): Promise<PreparedImage>;
 }
 
@@ -83,10 +84,7 @@ export class CameraTools {
   }
 
   private absorb(ev: Record<string, unknown>) {
-    for (const k of ["av", "tv", "iso", "exposure"]) {
-      const item = ev[`effective_value_${k}`] as { value?: unknown } | undefined;
-      if (item && typeof item.value === "string" && item.value) this.effective[k] = item.value;
-    }
+    Object.assign(this.effective, effectiveValues(ev));
   }
 
   /** Reads pending events so later waits only see new ones. */
@@ -104,17 +102,22 @@ export class CameraTools {
     return this.lastSettings;
   }
 
-  /** "Av f/2.8 · 1/1000 s · ISO 1600 · +1 EV", using camera-chosen values where the mode picks them. */
-  exposureLine(s: Settings = this.lastSettings): string {
+  /**
+   * "Av f/2.8 · 1/1000 s · ISO 1600 · +1 EV", using camera-chosen values where
+   * the mode picks them. `used` holds what a shot reported it actually used
+   * (flash caps the shutter at the sync speed, say), which wins.
+   */
+  exposureLine(s: Settings = this.lastSettings, used: Record<string, string> = {}): string {
     const v = (k: string) => {
       const own = s[k]?.value;
-      return typeof own === "string" && own ? own : this.effective[k] ?? "";
+      return used[k] || (typeof own === "string" && own ? own : this.effective[k] ?? "");
     };
     const mode = String(s.shootingmode?.value || s.shootingmodedial?.value || "");
     // With high-frequency anti-flicker on, Tv and M shoot at its matched speed, not the Tv setting.
     const hfTv = s.hfantiflickershoot?.value === "enable" && (mode === "tv" || mode === "m") ? String(s.hfflickertv?.value ?? "") : "";
-    const parts = [prettyValue("shootingmode", mode), prettyValue("av", v("av")), prettyValue("tv", hfTv || v("tv"))];
-    const iso = s.iso?.value === "auto" && this.effective.iso ? `ISO ${this.effective.iso} (auto)` : prettyValue("iso", v("iso"));
+    const parts = [prettyValue("shootingmode", mode), prettyValue("av", v("av")), prettyValue("tv", used.tv || hfTv || v("tv"))];
+    const autoIso = s.iso?.value === "auto" ? used.iso || this.effective.iso : "";
+    const iso = autoIso ? `ISO ${autoIso} (auto)` : prettyValue("iso", v("iso"));
     parts.push(iso);
     const ev = s.exposure?.value;
     if (typeof ev === "string" && ev && ev !== "+0.0") parts.push(prettyValue("exposure", ev));
@@ -160,6 +163,41 @@ export class CameraTools {
 
   private modeChangeable() {
     return this.client.has("shooting/settings/shootingmode", "put") || this.client.has("shooting/settings/shootingmodedial", "put");
+  }
+
+  /**
+   * The current value of every setting the agent may change (or only `keys`),
+   * for a preset. Settings the camera picks itself or can't change now are left out.
+   */
+  async snapshot(keys?: string[]): Promise<Record<string, unknown>> {
+    const s = await this.refresh();
+    const out: Record<string, unknown> = {};
+    for (const key of AGENT_SETTINGS) {
+      if (keys && !keys.includes(key)) continue;
+      const item = key === "shootingmode" ? (s.shootingmode ?? s.shootingmodedial) : s[key];
+      if (!item || item.value === null || item.value === undefined || item.value === "") continue;
+      if (key === "shootingmode" ? !this.modeChangeable() : !isChangeable(item)) continue;
+      out[key] = item.value;
+    }
+    const style = String(s.picturestyle?.value ?? "");
+    if (style && (!keys || keys.includes("style_detail"))) {
+      try {
+        const value = (await this.client.pictureStyleDetail(style)).value as Record<string, unknown> | null;
+        const detail = value ? Object.fromEntries(STYLE_DETAIL_FIELDS.filter((f) => typeof value[f] === "number").map((f) => [f, value[f]])) : {};
+        if (Object.keys(detail).length) out.style_detail = detail;
+      } catch {
+        // no fine-tuning on this style or camera
+      }
+    }
+    return out;
+  }
+
+  /** An idea picture from the image model (a PNG or JPEG data URL) as a small JPEG data URL that fits a HUD update. */
+  async ideaPicture(dataUrl: string, side: number): Promise<string> {
+    const bytes = Uint8Array.from(atob(dataUrl.slice(dataUrl.indexOf(",") + 1)), (c) => c.charCodeAt(0));
+    const img = await this.images.prepare(bytes, side, 0.7);
+    if (img.dataUrl.length <= IDEA_IMAGE_BYTES) return img.dataUrl;
+    return (await this.images.prepare(bytes, Math.round(side * 0.7), 0.55)).dataUrl;
   }
 
   /** A live-view frame; `zoom` (5 or 10) magnifies around the AF point to check focus, then zooms back out. */
@@ -247,32 +285,41 @@ export class CameraTools {
   }
 
   /**
-   * Applies changes in a safe order (mode first, so the other settings are
-   * judged in the new mode). Each change is validated against the camera's
-   * current options; failures don't stop the rest.
+   * Applies changes in a safe order: the settings that change what else is
+   * available come first, so the rest are judged against the new options.
+   * Each change is validated against the camera's current options; failures
+   * don't stop the rest. A cancelled run stops before the next change.
    */
-  async set(changes: Record<string, unknown>): Promise<{ applied: string[]; errors: string[] }> {
-    const order = ["shootingmode", "iso", ...AGENT_SETTINGS.filter((k) => k !== "shootingmode" && k !== "iso")];
+  async set(changes: Record<string, unknown>, signal?: AbortSignal): Promise<{ applied: string[]; errors: string[] }> {
+    const order = [...LEADING_SETTINGS, ...AGENT_SETTINGS.filter((k) => !LEADING_SETTINGS.includes(k))];
     const keys = order.filter((k) => k in changes && changes[k] !== undefined && changes[k] !== null);
     const applied: string[] = [];
     const errors: string[] = [];
     let s = await this.refresh();
     for (const key of keys) {
+      if (signal?.aborted) break;
+      const raw = changes[key];
       let value: string | number | Record<string, number>;
-      if (key === "colortemperature") value = Math.round(Number(changes[key]));
-      else if (key === "wbshift") {
-        const v = (changes[key] ?? {}) as Record<string, unknown>;
+      if (key === "wbshift") {
+        if (typeof raw !== "object" || Array.isArray(raw)) {
+          errors.push("wbshift takes an object with ba and mg.");
+          continue;
+        }
+        const v = raw as Record<string, unknown>;
         const cur = (s.wbshift?.value ?? {}) as unknown as Record<string, number>;
         value = { ba: Math.round(Number(v.ba ?? cur.ba ?? 0)), mg: Math.round(Number(v.mg ?? cur.mg ?? 0)) };
-      } else value = String(changes[key]).trim();
+      } else if (typeof raw === "object") {
+        errors.push(`${key} = ${JSON.stringify(raw)} is not accepted.`);
+        continue;
+      } else if (key === "colortemperature") value = Math.round(Number(raw));
+      else value = String(raw).trim();
       const item: SettingItem | undefined = key === "shootingmode" ? (s.shootingmode ?? s.shootingmodedial) : s[key];
       const before = item?.value ?? null;
       if (JSON.stringify(before) === JSON.stringify(value)) continue;
       try {
         await this.client.set(key, value, key === "shootingmode" ? undefined : item);
         applied.push(diffLine(key, before === "" ? this.effective[key] ?? "auto" : before, value));
-        // Mode, ISO and the shutter type change which other settings are available.
-        if (key === "shootingmode" || key === "iso" || key === "shuttermode") s = await this.refresh();
+        if (LEADING_SETTINGS.includes(key)) s = await this.refresh();
       } catch (e) {
         if (e instanceof SettingError) errors.push(e.message);
         else if (e instanceof CcapiError) errors.push(`${key}: camera error ${e.status} ${e.message}`);
@@ -280,7 +327,7 @@ export class CameraTools {
       }
     }
     const detail = changes.style_detail as Record<string, unknown> | undefined;
-    if (detail && typeof detail === "object") await this.setStyleDetail(detail, applied, errors);
+    if (detail && typeof detail === "object" && !signal?.aborted) await this.setStyleDetail(detail, applied, errors);
     await this.refresh();
     return { applied, errors };
   }
@@ -303,21 +350,50 @@ export class CameraTools {
   }
 
   /** Takes a picture, waits for the file, downloads a display-size copy. */
-  async shoot(af: boolean, n: number): Promise<ShotResult> {
+  async shoot(af: boolean, n: number, signal?: AbortSignal): Promise<ShotResult> {
     await this.drainEvents();
     const settings = this.lastSettings;
-    await this.client.shutter(af);
-    const path = await this.client.waitForNewFile(20_000, (e) => this.absorb(e));
+    // The first camera-chosen values after the press are the ones the shot
+    // used (with the new file, or just after it); later ones are the live
+    // meter again.
+    const used: Record<string, string> = {};
+    const seen = (ev: Record<string, unknown>) => {
+      this.absorb(ev);
+      for (const [k, v] of Object.entries(effectiveValues(ev))) used[k] ??= v;
+    };
+    await this.client.shutter(af, undefined, signal);
+    const path = await this.client.waitForNewFile(20_000, seen);
     const jpeg = await this.client.download(path, "display");
     const image = await this.images.prepare(jpeg, MODEL_IMAGE_SIDE, 0.82);
     const thumb = (await this.images.prepare(jpeg, THUMB_SIDE, 0.6)).dataUrl;
-    await this.drainEvents();
-    return { n, jpeg, image, thumb, exposure: this.exposureLine(settings), settings };
+    try {
+      seen(await this.client.poll("immediately"));
+    } catch {
+      // cameras without polling: the settings stand in
+    }
+    return { n, jpeg, image, thumb, exposure: this.exposureLine(settings, used), settings };
   }
 }
 
+/**
+ * Set first, with a refresh after each: the mode, shutter type and ISO change
+ * which other settings are available (flash needs the mechanical shutter),
+ * and the picture style decides which style style_detail fine-tunes.
+ */
+const LEADING_SETTINGS: string[] = ["shootingmode", "shuttermode", "iso", "picturestyle"];
+
 /** Settings a mode can hand over to the camera, so "unchangeable" means "the camera picks it". */
 const EXPOSURE_KEYS: string[] = ["av", "tv", "iso", "exposure"];
+
+/** The camera-chosen exposure values (effective_value_*) an event reports. */
+function effectiveValues(ev: Record<string, unknown>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const k of EXPOSURE_KEYS) {
+    const item = ev[`effective_value_${k}`] as { value?: unknown } | undefined;
+    if (item && typeof item.value === "string" && item.value) out[k] = item.value;
+  }
+  return out;
+}
 
 function isChangeable(item: SettingItem): boolean {
   const ab = item.ability;

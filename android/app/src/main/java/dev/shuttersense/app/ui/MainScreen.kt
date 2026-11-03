@@ -47,6 +47,7 @@ import dev.shuttersense.app.ui.components.GlassesGlyph
 import dev.shuttersense.app.ui.components.RoundIcon
 import dev.shuttersense.app.ui.components.StatusDot
 import dev.shuttersense.app.ui.settings.GlassesSheet
+import dev.shuttersense.app.ui.settings.PresetsSheet
 import dev.shuttersense.app.ui.settings.SettingsSheet
 
 // The screens after connecting. Narrow (folded): Agent and Camera behind a
@@ -88,6 +89,7 @@ fun MainScreen(vm: AppViewModel) {
         }
     }
     if (vm.showGlasses) GlassesSheet(vm)
+    if (vm.showPresets) PresetsSheet(vm)
     if (menu) SettingsSheet(vm) { menu = false }
 }
 

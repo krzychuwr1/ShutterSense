@@ -169,7 +169,7 @@ export function fetchTransport(base: string, init: { fetch?: typeof fetch; heade
 }
 
 export class CcapiClient {
-  /** Endpoint key (path after the version) -> best endpoint per method. */
+  /** Endpoint key (path after the version) -> its endpoints, highest version first. */
   private endpoints = new Map<string, Endpoint[]>();
   private transport: Transport;
 
@@ -226,12 +226,12 @@ export class CcapiClient {
         const parts = splitPath(path);
         if (!parts) continue;
         const ep: Endpoint = { version: parts[0], path: `/ccapi/${parts[0]}/${parts[1]}`, get: !!raw.get, post: !!raw.post, put: !!raw.put, delete: !!raw.delete };
-        const list2 = this.endpoints.get(parts[1]) ?? [];
-        list2.push(ep);
-        list2.sort((a, b) => versionNumber(b.version) - versionNumber(a.version));
-        this.endpoints.set(parts[1], list2);
+        const eps = this.endpoints.get(parts[1]) ?? [];
+        eps.push(ep);
+        this.endpoints.set(parts[1], eps);
       }
     }
+    for (const eps of this.endpoints.values()) eps.sort((a, b) => versionNumber(b.version) - versionNumber(a.version));
     if (!this.endpoints.size) throw new CcapiError(0, "The camera listed no API endpoints", "/ccapi");
   }
 
@@ -367,6 +367,11 @@ export class CcapiClient {
   async setFunction(name: string, value: string | number): Promise<void> {
     const path = this.need(`functions/${name}`, "put");
     checkValue(name, value, await this.functionSetting(name));
+    await this.putValue(name, path, value);
+  }
+
+  /** PUT {value}, with a camera refusal reworded as a SettingError. */
+  private async putValue(name: string, path: string, value: SettingValue): Promise<void> {
     try {
       await this.call("PUT", path, { value });
     } catch (e) {
@@ -493,14 +498,8 @@ export class CcapiClient {
     const key = this.settingKey(name);
     const path = this.endpoint(`shooting/settings/${key}`, "put");
     if (!path) throw new SettingError(name, `${name} can't be changed on this camera.`);
-    const item = current ?? (await this.setting(key));
-    checkValue(name, value, item);
-    try {
-      await this.call("PUT", path, { value });
-    } catch (e) {
-      if (e instanceof CcapiError) throw new SettingError(name, `${name} = ${JSON.stringify(value)} was refused by the camera (${e.message}).`);
-      throw e;
-    }
+    checkValue(name, value, current ?? (await this.setting(key)));
+    await this.putValue(name, path, value);
   }
 
   /** Changes some fields of a composite setting, keeping the others. */
@@ -582,27 +581,33 @@ export class CcapiClient {
 
   // ---------------------------------------------------------------- shooting control
 
-  /** Full press and release, with or without autofocus. */
   /**
-   * One press of the shutter. A camera still writing a burst answers "Device
-   * busy"; that press is retried until the buffer clears (up to `busyWaitMs`).
+   * One press of the shutter, with or without autofocus. A camera still
+   * writing a burst answers "Device busy"; that press is retried until the
+   * buffer clears (up to `busyWaitMs`). Without the one-shot endpoint it is a
+   * full press and a release on the manual button, each retried on its own,
+   * so a busy release can't take a second picture. `signal` stops the retries
+   * of a press that hasn't happened yet; a press that did is always released.
    */
-  async shutter(af: boolean, busyWaitMs = 15_000): Promise<void> {
-    const until = Date.now() + busyWaitMs;
+  async shutter(af: boolean, busyWaitMs = 15_000, signal?: AbortSignal): Promise<void> {
+    const path = this.endpoint("shooting/control/shutterbutton", "post");
+    if (path) return this.whileBusy(() => this.call("POST", path, { af }), busyWaitMs, signal);
+    const manual = this.need("shooting/control/shutterbutton/manual", "post");
+    await this.whileBusy(() => this.call("POST", manual, { action: "full_press", af }), busyWaitMs, signal);
+    await this.whileBusy(() => this.call("POST", manual, { action: "release", af: false }), busyWaitMs);
+  }
+
+  /** Runs `fn`, again every 300 ms while the camera answers "Device busy", for up to `waitMs` or until `signal` aborts. */
+  private async whileBusy(fn: () => Promise<unknown>, waitMs: number, signal?: AbortSignal): Promise<void> {
+    const until = Date.now() + waitMs;
     for (;;) {
+      signal?.throwIfAborted();
       try {
-        const path = this.endpoint("shooting/control/shutterbutton", "post");
-        if (path) {
-          await this.call("POST", path, { af });
-          return;
-        }
-        const manual = this.need("shooting/control/shutterbutton/manual", "post");
-        await this.call("POST", manual, { action: "full_press", af });
-        await this.call("POST", manual, { action: "release", af: false });
+        await fn();
         return;
       } catch (e) {
         if (!(e instanceof CcapiError && e.status === 503 && /busy/i.test(e.message)) || Date.now() >= until) throw e;
-        await new Promise((r) => setTimeout(r, 300));
+        await sleep(300);
       }
     }
   }

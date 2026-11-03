@@ -5,6 +5,7 @@ import { encodeJpegNode } from "../tools/jpeg-node.ts";
 import { loadImageNode } from "../tools/scene-files-node.ts";
 import { VirtualCamera } from "./camera.ts";
 import { Card } from "./card.ts";
+import { handleSim } from "./control.ts";
 import { blurCircleMm } from "./render.ts";
 
 /** Real-time waits (self-timer, burst cadence) shortened so tests run quickly. */
@@ -71,6 +72,21 @@ test("exposure compensation brightens by the same number of stops", async () => 
   assert.ok(Math.abs(stops - 5 / 3) < 0.4, `expected +1⅔ stops, got ${stops.toFixed(2)}`);
 });
 
+test("with flash, Tv shoots at the sync speed and solves the exposure for it", async () => {
+  const c = await cam("gym");
+  const e = c.solve(0, { flash: "fill" });
+  assert.equal(e.tv, "1/200");
+  assert.ok(Math.abs(e.error) < 0.3, `exposure error ${e.error.toFixed(2)} stops at ${e.av} ISO ${e.isoValue}`);
+});
+
+test("bulb with auto ISO meters for the ISO it uses", async () => {
+  const c = await cam("group");
+  await setMode(c, "bulb");
+  const e = c.solve(0);
+  assert.equal(e.isoValue, "400");
+  assert.ok(Math.abs(e.error) < 0.3, `exposure error ${e.error.toFixed(2)} stops`);
+});
+
 test("spot metering on a backlit face exposes brighter than evaluative", async () => {
   const c = await cam("group");
   const evaluative = c.solve(0);
@@ -134,6 +150,28 @@ test("flash lights a dark foreground and falls off with distance", async () => {
   assert.deepEqual(flash.json, { value: "", ability: [] });
 });
 
+test("HDR Mode, set by hand, lifts the face in the shade and keeps the sunlit meadow", async () => {
+  const c = await cam("shade");
+  const face: [number, number, number, number] = [0.17, 0.15, 0.26, 0.3];
+  const meadow: [number, number, number, number] = [0.45, 0.35, 0.95, 0.42];
+  const [plain] = await shoot(c);
+  assert.deepEqual(c.status().menu, {});
+  assert.ok(!((await handleSim(c, { method: "POST", path: "/sim/menu", body: { setting: "Picture Style", value: "Fine Detail" } })).json as { applied: boolean }).applied);
+  const res = await handleSim(c, { method: "POST", path: "/sim/menu", body: { setting: "Adjust dyn range", value: "Auto" } });
+  assert.deepEqual(res.json, { applied: true });
+  assert.deepEqual(c.status().menu, { "HDR Mode": "Auto" });
+  const [hdr] = await shoot(c);
+  const before = { face: meanLum(await fileBytes(c, plain.path), face), meadow: meanLum(await fileBytes(c, plain.path), meadow) };
+  const after = { face: meanLum(await fileBytes(c, hdr.path), face), meadow: meanLum(await fileBytes(c, hdr.path), meadow) };
+  // Five stops apart: one exposure leaves the face dark; the merge brings it up without burning the meadow.
+  assert.ok(before.meadow - before.face > 90, `plain: face ${before.face.toFixed(0)}, meadow ${before.meadow.toFixed(0)}`);
+  assert.ok(after.face > before.face + 35, `face ${before.face.toFixed(0)} -> ${after.face.toFixed(0)}`);
+  assert.ok(after.meadow < 245 && after.meadow <= before.meadow + 5, `meadow ${before.meadow.toFixed(0)} -> ${after.meadow.toFixed(0)}`);
+  // Switching it off goes back to single shots.
+  await handleSim(c, { method: "POST", path: "/sim/menu", body: { setting: "Adjust dyn range", value: "Disable HDR" } });
+  assert.deepEqual(c.status().menu, {});
+});
+
 test("the aspect ratio crops the recorded image", async () => {
   const c = await cam("group");
   assert.equal((await put(c, "stillimageaspectratio", "16:9")).status, 200);
@@ -171,21 +209,22 @@ test("WB bracketing writes three JPEGs and is not offered with RAW", async () =>
 
 test("the AF frame position decides what spot AF focuses on", async () => {
   const c = await cam("group");
-  // Face detection shows the subject's frame; then point spot AF at it, and at the field.
+  // Face detection shows the subject's frame; then point spot AF at the head in it, and at the field.
   await post(c, "ver100/shooting/liveview", { liveviewsize: "small", cameradisplay: "on" });
   const info = (await get(c, "/ccapi/ver100/shooting/liveview/flipdetail?kind=info")).bytes!;
   const json = JSON.parse(new TextDecoder().decode(info.subarray(7, info.length - 2)));
   const face = json.liveviewdata.afframe[0];
   await put(c, "afmethod", "spot");
-  await c.handle({ method: "PUT", path: "/ccapi/ver100/shooting/liveview/afframeposition", body: { positionx: face.x + face.width / 2, positiony: face.y + face.height * 0.4 } });
+  const at = { positionx: Math.round(face.x + face.width / 2), positiony: Math.round(face.y + face.height * 0.1) };
+  assert.equal((await c.handle({ method: "PUT", path: "/ccapi/ver100/shooting/liveview/afframeposition", body: at })).status, 200);
+  // Positions are whole sensor pixels.
+  assert.equal((await c.handle({ method: "PUT", path: "/ccapi/ver100/shooting/liveview/afframeposition", body: { positionx: 10.5, positiony: 10 } })).status, 400);
   await post(c, "ver100/shooting/control/af", { action: "start" });
   assert.equal((await post(c, "ver100/shooting/control/af", { action: "start" })).status, 503); // Already started
   await post(c, "ver100/shooting/control/af", { action: "stop" });
-  // The front person's frame overlaps the middle one: spot AF locks on whichever person is under the point, at their distance.
-  const depths: Record<string, number> = { front: 2.1, middle: 3.4, back: 5.6 };
-  const on = c.status().focusOn;
-  assert.ok(on in depths, `focused on ${on}`);
-  assert.ok(Math.abs(c.status().focus - depths[on]) < 0.01, `focus ${c.status().focus} on ${on}`);
+  // Spot AF locks on the person under the point, at their distance.
+  assert.equal(c.status().focusOn, "front");
+  assert.ok(Math.abs(c.status().focus - 2.1) < 0.01, `focus ${c.status().focus}`);
   // The lawn near the bottom edge, past the people.
   await c.handle({ method: "PUT", path: "/ccapi/ver100/shooting/liveview/afframeposition", body: { positionx: 100, positiony: 780 } });
   await post(c, "ver100/shooting/control/af", { action: "start" });
@@ -378,6 +417,11 @@ test("self-timer, the clock and leaving the network", async () => {
   assert.equal((await c.handle({ method: "PUT", path: "/ccapi/ver100/functions/datetime", body: { datetime: "Wed, 01 Jan 2019 01:23:45 +0900", dst: false } })).status, 400);
   const now = (await get(c, "/ccapi/ver100/functions/datetime")).json as { datetime: string };
   assert.match(now.datetime, /^Tue, 01 Jan 2019 01:2\d:\d\d \+0900$/);
+  // Files are dated by the camera clock, when written and when changed.
+  const [shot] = await shoot(c);
+  assert.match(((await get(c, `${shot.path}?kind=info`)).json as { lastmodifieddate: string }).lastmodifieddate, /31 Dec 2018/);
+  await c.handle({ method: "PUT", path: shot.path, body: { action: "rating", value: "3" } });
+  assert.match(((await get(c, `${shot.path}?kind=info`)).json as { lastmodifieddate: string }).lastmodifieddate, /31 Dec 2018/);
   assert.equal((await post(c, "ver100/functions/wificonnection", { action: "disconnect" })).status, 202);
   assert.equal((await get(c, "/ccapi")).closed, true);
   c.reconnect();
@@ -394,6 +438,18 @@ test("event polling reports changes once, in both versions", async () => {
   const ev = (await get(c, "/ccapi/ver110/event/polling")).json as Record<string, unknown>;
   assert.deepEqual(Object.keys(ev).sort(), ["beep", "wbshift"]);
   assert.equal((await get(c, "/ccapi/ver110/event/polling?timeout=forever")).status, 400);
+});
+
+test("event polling reports the exposure the last shot used, even when the live pick changed", async () => {
+  const c = await cam("group");
+  await get(c, "/ccapi/ver110/event/polling");
+  await put(c, "exposure", "+1.0");
+  await put(c, "aeb", "+1.0");
+  const shots = await shoot(c);
+  const last = shots[shots.length - 1].exposure.tv;
+  assert.notEqual(last, c.solve(0).tv);
+  const ev = (await get(c, "/ccapi/ver110/event/polling")).json as Record<string, { value: string }>;
+  assert.equal(ev.effective_value_tv.value, last);
 });
 
 test("the contents API pages by 100, counts, filters and streams chunks", () => {

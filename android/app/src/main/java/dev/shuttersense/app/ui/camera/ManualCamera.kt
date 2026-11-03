@@ -152,10 +152,15 @@ class ManualCamera(
     private fun absorb(info: LiveViewInfo) {
         info.histogram?.firstOrNull()?.takeIf { it.size >= 64 }?.let { histogram = it }
         info.sensorSize?.let { sensor = it }
-        val (w, h) = sensor ?: return
-        if (focusing || w <= 0 || h <= 0) return
-        val f = info.afFrames.firstOrNull { it.select == 1 } ?: info.afFrames.firstOrNull() ?: return
-        if (f.width > 0) afPoint = Offset((f.x + f.width / 2f) / w, (f.y + f.height / 2f) / h)
+        if (!focusing) afPointOf(info)?.let { afPoint = it }
+    }
+
+    /** The centre of the selected AF frame as fractions of the frame, once the sensor size is known. */
+    private fun afPointOf(info: LiveViewInfo): Offset? {
+        val (w, h) = sensor ?: return null
+        val f = info.afFrames.firstOrNull { it.select == 1 } ?: info.afFrames.firstOrNull() ?: return null
+        if (w <= 0 || h <= 0 || f.width <= 0) return null
+        return Offset((f.x + f.width / 2f) / w, (f.y + f.height / 2f) / h)
     }
 
     /** Sensor size (for the AF point) and where the AF frame is now. */
@@ -163,9 +168,7 @@ class ManualCamera(
         try {
             val info = lock.withLock { tools.client.liveDetail("info").info } ?: return
             sensor = info.sensorSize
-            val (w, h) = sensor ?: return
-            val f = info.afFrames.firstOrNull { it.select == 1 } ?: info.afFrames.firstOrNull() ?: return
-            if (w > 0 && h > 0) afPoint = Offset((f.x + f.width / 2f) / w, (f.y + f.height / 2f) / h)
+            afPointOf(info)?.let { afPoint = it }
         } catch (e: CancellationException) {
             throw e
         } catch (_: Exception) {
@@ -264,8 +267,7 @@ class ManualCamera(
         if (key == "shootingmode") {
             val item = s["shootingmode"] ?: s["shootingmodedial"] ?: return@mapNotNull null
             val options = (item.ability as? Ability.Options)?.values ?: emptyList()
-            val canSet = tools.client.has("shooting/settings/shootingmode", "put") || tools.client.has("shooting/settings/shootingmodedial", "put")
-            Dial(key, label, item.text.orEmpty(), options, canSet && options.isNotEmpty(), null)
+            Dial(key, label, item.text.orEmpty(), options, tools.modeChangeable() && options.isNotEmpty(), null)
         } else {
             val item = s[key] ?: return@mapNotNull null
             val options = (item.ability as? Ability.Options)?.values ?: emptyList()

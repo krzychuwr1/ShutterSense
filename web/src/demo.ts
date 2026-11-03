@@ -99,7 +99,13 @@ export async function startDemo(root: HTMLElement) {
   let phone: PhoneApp | null = null;
   const glasses = glassesView(() => phone!.connectSimGlasses());
   const panel = new CameraPanel(link, () => void phone?.cameraChanged(), glasses.root);
-  phone = new PhoneApp(tools, { goals: () => panel.goals(), cameraLabel: "Simulated camera (built in)", simGlasses: glasses.show });
+  phone = new PhoneApp(tools, {
+    goals: () => panel.goals(),
+    cameraLabel: "Simulated camera (built in)",
+    simGlasses: glasses.show,
+    // The photographer's "Done" on a menu guide stands in for pressing the buttons on the simulated body.
+    handSet: async (setting, value) => void (await link.request("POST", "/sim/menu", { setting, value })),
+  });
 
   root.replaceChildren(
     sprite(),

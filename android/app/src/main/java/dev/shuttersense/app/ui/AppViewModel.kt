@@ -1,11 +1,5 @@
 package dev.shuttersense.app.ui
 
-import kotlinx.coroutines.flow.distinctUntilChanged
-import androidx.compose.runtime.snapshotFlow
-import dev.shuttersense.app.service.SessionService
-import kotlinx.coroutines.withTimeoutOrNull
-import dev.shuttersense.app.net.CameraWifi
-import dev.shuttersense.app.net.Networks
 import android.app.Application
 import android.content.Context
 import android.graphics.Bitmap
@@ -16,6 +10,7 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.lifecycle.AndroidViewModel
@@ -24,7 +19,10 @@ import dev.shuttersense.app.agent.AgentRun
 import dev.shuttersense.app.agent.AndroidImageTools
 import dev.shuttersense.app.agent.CameraTools
 import dev.shuttersense.app.agent.DEFAULT_MAX_SHOTS
+import dev.shuttersense.app.agent.Idea
 import dev.shuttersense.app.agent.Outcome
+import dev.shuttersense.app.agent.PrefsPresetStore
+import dev.shuttersense.app.agent.Preset
 import dev.shuttersense.app.agent.RunOptions
 import dev.shuttersense.app.agent.RunUi
 import dev.shuttersense.app.agent.ShotResult
@@ -43,14 +41,21 @@ import dev.shuttersense.app.glasses.HudGuide
 import dev.shuttersense.app.glasses.HudState
 import dev.shuttersense.app.glasses.RoomListener
 import dev.shuttersense.app.glasses.RoomState
+import dev.shuttersense.app.glasses.shotReply
+import dev.shuttersense.app.net.CameraWifi
+import dev.shuttersense.app.net.Networks
+import dev.shuttersense.app.service.SessionService
 import dev.shuttersense.app.sim.SimScene
 import dev.shuttersense.app.sim.SimulatedCamera
 import dev.shuttersense.app.ui.camera.ManualCamera
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.net.ConnectException
 import java.net.NoRouteToHostException
 import java.net.SocketTimeoutException
@@ -103,6 +108,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app), RunUi, RoomListene
     var welcomeSeen by mutableStateOf(prefs.getBoolean("welcomeSeen", false))
         private set
     private val session = prefs.getString("session", null) ?: UUID.randomUUID().toString().also { prefs.edit().putString("session", it).apply() }
+
+    // ---------------------------------------------------------------- presets
+    private val presetStore = PrefsPresetStore(prefs)
+
+    /** The photographer's saved presets (the agent saves them with save_preset), oldest first. */
+    val presets = mutableStateListOf<Preset>().apply { addAll(presetStore.list()) }
+    var showPresets by mutableStateOf(false)
 
     // ---------------------------------------------------------------- navigation
     /** The welcome pages, on first launch or from About. */
@@ -185,7 +197,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app), RunUi, RoomListene
         private set
     var glassesOnline by mutableStateOf(0)
         private set
-    /** A glasses session exists (pairing or paired); it lives until the app closes. */
+    /** A glasses session exists (pairing or paired); it lives until the app closes or the server expires it. */
     var glassesSession by mutableStateOf(false)
         private set
     var pattern by mutableStateOf<String?>(null)
@@ -198,14 +210,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app), RunUi, RoomListene
     private var run: AgentRun? = null
     private var room: GlassesRoom? = null
     private var hud = HudState()
-    private val recorder = Recorder()
-    private var recordJob: Job? = null
+    private var recorder: Recorder? = null
 
     private var workerClient: WorkerClient? = null
     private val worker: WorkerClient
         get() = workerClient?.takeIf { it.base == workerUrl.trim().trimEnd('/') } ?: WorkerClient(workerUrl).also { workerClient = it }
 
     init {
+        presetStore.onChange = {
+            presets.clear()
+            presets.addAll(presetStore.list())
+        }
         Networks.init(app)
         // Keep running with the screen locked while there's a camera, an agent run or a glasses session.
         viewModelScope.launch {
@@ -310,7 +325,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app), RunUi, RoomListene
         tools = t
         this.demo = demo
         exposure = t.exposureLine()
-        run = AgentRun(worker, t, this, RunOptions(maxShots, askBeforeShooting, { glassesOnline > 0 }, session), viewModelScope)
+        recreateRun()
         manual = ManualCamera(t, viewModelScope, onExposure = { exposure = it }, onNotice = { notice = it })
         camera = CameraStatus.Connected(if (demo) DEMO_CAMERA else t.describe(), if (demo) DEMO_CAMERA else t.modelName, t.lens)
     }
@@ -364,11 +379,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app), RunUi, RoomListene
         manual = null
         inMain = false
         demo = false
-        steps.clear()
-        firstShot = null
-        lastShot = null
-        beforeView = null
-        settingsTouched = false
+        clearConversation()
         exposure = null
         camera = CameraStatus.Disconnected
     }
@@ -453,11 +464,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app), RunUi, RoomListene
             return
         }
         saveSettings()
-        steps.clear()
-        firstShot = null
-        lastShot = null
-        beforeView = null
-        settingsTouched = false
+        clearConversation()
         hud = HudState(phase = "working", goal = text.trim(), shotsMax = maxShots)
         recreateRun()
         run?.start(text)
@@ -468,7 +475,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app), RunUi, RoomListene
     /** A fresh run picks up the current toggles (ask before shooting, max shots). */
     private fun recreateRun() {
         val t = tools ?: return
-        run = AgentRun(worker, t, this, RunOptions(maxShots, askBeforeShooting, { glassesOnline > 0 }, session), viewModelScope)
+        run = AgentRun(worker, t, this, RunOptions(maxShots, askBeforeShooting, { glassesOnline > 0 }, session, presetStore), viewModelScope)
     }
 
     /** Sends the goal box: a new goal when idle, a correction while working or after a finished run. */
@@ -480,7 +487,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app), RunUi, RoomListene
             notice = "Connect a camera first"
             return
         }
-        if (r.busy || steps.any { it.kind == StepKind.GOAL }) {
+        if (r.busy || started) {
             // Working, or a correction to the finished shot.
             if (!r.busy) hud = hud.copy(phase = "working", summary = null)
             r.instruct(t)
@@ -489,32 +496,68 @@ class AppViewModel(app: Application) : AndroidViewModel(app), RunUi, RoomListene
         } else startGoal(t)
     }
 
-    /** The input bar: answers an open question, else a goal or a correction. */
+    /** The input bar: answers an open question or shot approval, else a goal or a correction. */
     fun send() {
-        if (question != null) {
-            val t = goal.trim()
-            if (t.isEmpty()) return
-            goal = ""
-            answer(t)
-        } else submit()
+        val t = goal.trim()
+        if (t.isEmpty()) return
+        if (question != null || approval != null) goal = ""
+        route(t)
     }
+
+    /**
+     * Where typed, spoken and dictated input goes: the answer to an open
+     * question, a reply to an open shot approval, else a goal or a correction.
+     */
+    private fun route(text: String) {
+        val t = text.trim()
+        if (t.isEmpty()) return
+        when {
+            question != null -> answer(t)
+            approval != null -> when (shotReply(t)) {
+                true -> approve(true)
+                false -> approve(false)
+                null -> {
+                    // A correction ("make it warmer first"): queued before the skip, so the next round sees it.
+                    goal = t
+                    submit()
+                    approve(false)
+                }
+            }
+            else -> {
+                goal = t
+                submit()
+            }
+        }
+    }
+
+    /** "Use" on a saved preset: asks the agent to apply it, the same way a typed goal or correction goes. */
+    fun usePreset(p: Preset) = route("Apply my preset \"${p.name}\"")
+
+    fun deletePreset(p: Preset) = presetStore.remove(p.name)
+
+    /** A tapped picture idea: tells the agent which one to go with. */
+    fun tryIdea(idea: Idea) = route(if (idea.direction.isNotEmpty()) "Let's try \"${idea.title}\": ${idea.direction}" else "Let's try \"${idea.title}\"")
 
     /** Whether a goal has been given in this conversation (corrections then refine it). */
     val started: Boolean get() = steps.any { it.kind == StepKind.GOAL }
 
     fun newGoal() {
         run?.cancel()
-        steps.clear()
-        firstShot = null
-        lastShot = null
-        beforeView = null
-        settingsTouched = false
+        clearConversation()
         hud = HudState()
         pushHud()
         recreateRun()
     }
 
     fun cancel() = run?.cancel()
+
+    private fun clearConversation() {
+        steps.clear()
+        firstShot = null
+        lastShot = null
+        beforeView = null
+        settingsTouched = false
+    }
 
     fun answer(text: String) {
         question?.answer?.complete(text)
@@ -538,6 +581,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app), RunUi, RoomListene
         when (entry.kind) {
             StepKind.TELL -> hud = hud.copy(message = entry.text)
             StepKind.GOAL -> hud = hud.copy(goal = entry.text)
+            // The ideas stay on the lens to flip through until the next goal.
+            StepKind.IDEAS -> if (entry.ideas.isNotEmpty()) hud = hud.copy(ideas = entry.ideas)
             else -> {}
         }
         // The menu path stays on the lens while its question is open, and goes with the next step.
@@ -601,6 +646,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app), RunUi, RoomListene
         }
     }
 
+    override suspend fun handSet(setting: String, value: String) {
+        // Only the demo camera learns it this way; a real camera has it set already.
+        val s = simulator?.takeIf { demo } ?: return
+        try {
+            s.menu(setting, value)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            // an older simulator without menu settings: nothing changes in the picture
+        }
+    }
+
     override fun ended(outcome: Outcome, summary: String?, lens: String?) {
         busy = false
         status = ""
@@ -628,36 +685,47 @@ class AppViewModel(app: Application) : AndroidViewModel(app), RunUi, RoomListene
         if (recording) stopRecording() else startRecording()
     }
 
+    /** Records until the second tap (or the time limit), then transcribes and sends what was said. */
     private fun startRecording() {
+        val r = Recorder()
+        recorder = r
         recording = true
-        recordJob = viewModelScope.launch {
-            try {
-                recorder.record()
+        viewModelScope.launch {
+            val wav = try {
+                r.record()
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 notice = e.message ?: "Couldn't record"
-                recording = false
+                null
+            } finally {
+                // Unless a new recording has started meanwhile.
+                if (recorder === r) {
+                    recording = false
+                    recorder = null
+                }
             }
+            if (wav != null) transcribe(wav)
         }
     }
 
     private fun stopRecording() {
+        recorder?.stop()
         recording = false
-        val wav = recorder.stop() ?: return
+    }
+
+    private suspend fun transcribe(wav: ByteArray) {
         transcribing = true
-        viewModelScope.launch {
-            try {
-                recordJob?.join()
-                val text = worker.transcribe(wav)
-                if (text.isBlank()) notice = "Didn't catch that. Try again."
-                else {
-                    goal = text
-                    submit()
-                }
-            } catch (e: Exception) {
-                notice = e.message ?: "Transcription failed"
-            } finally {
-                transcribing = false
-            }
+        try {
+            val text = worker.transcribe(wav)
+            if (text.isBlank()) notice = "Didn't catch that. Try again."
+            else route(text)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            notice = e.message ?: "Transcription failed"
+        } finally {
+            transcribing = false
         }
     }
 
@@ -671,7 +739,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app), RunUi, RoomListene
             r.requestPairing()
             return
         }
-        viewModelScope.launch {
+        // A second tap while the session is being created doesn't make another one.
+        if (creatingRoom?.isActive == true) return
+        creatingRoom = viewModelScope.launch {
             try {
                 val w = worker
                 val s = w.createSession()
@@ -690,6 +760,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app), RunUi, RoomListene
     }
 
     private var pendingPair = false
+    private var creatingRoom: Job? = null
 
     override fun onState(state: RoomState, glasses: Int) {
         viewModelScope.launch {
@@ -711,16 +782,20 @@ class AppViewModel(app: Application) : AndroidViewModel(app), RunUi, RoomListene
     }
 
     override fun onSay(text: String) {
+        viewModelScope.launch { route(text) }
+    }
+
+    override fun onGone() {
         viewModelScope.launch {
-            val q = question
-            when {
-                q != null -> answer(text)
-                approval != null -> approve(!Regex("""\b(no|skip|don't|stop)\b""", RegexOption.IGNORE_CASE).containsMatchIn(text))
-                else -> {
-                    goal = text
-                    submit()
-                }
-            }
+            // The room expired on the server: drop it, so "Connect glasses" makes a fresh one.
+            room?.stop()
+            room = null
+            glassesSession = false
+            glassesOnline = 0
+            pendingPair = false
+            pattern = null
+            patternExpires = 0
+            notice = "Glasses session expired"
         }
     }
 

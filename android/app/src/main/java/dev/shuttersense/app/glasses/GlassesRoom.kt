@@ -1,5 +1,6 @@
 package dev.shuttersense.app.glasses
 
+import dev.shuttersense.app.agent.Idea
 import dev.shuttersense.app.agent.MenuScreen
 import dev.shuttersense.app.agent.WorkerClient
 import kotlinx.coroutines.CoroutineScope
@@ -38,6 +39,8 @@ data class HudState(
     val options: List<String> = emptyList(),
     /** A setting to change by hand on the camera, and the menu path. */
     val guide: HudGuide? = null,
+    /** Picture ideas (poses, compositions) to flip through; each image at most IDEA_IMAGE_BYTES. */
+    val ideas: List<Idea> = emptyList(),
 ) {
     fun toJson(): JsonObject = buildJsonObject {
         put("phase", phase)
@@ -59,6 +62,15 @@ data class HudState(
                 put("menu", buildJsonArray { guide.menu.forEach { add(it.toJson()) } })
             })
         } else put("guide", JsonNull)
+        put("ideas", buildJsonArray {
+            ideas.forEach { idea ->
+                add(buildJsonObject {
+                    put("title", idea.title)
+                    put("direction", idea.direction)
+                    put("image", idea.image?.takeIf { it.length <= IDEA_IMAGE_BYTES })
+                })
+            }
+        })
         if (question != null) {
             put("question", buildJsonObject {
                 put("text", question)
@@ -73,6 +85,9 @@ data class HudGuide(val setting: String, val steps: List<String>, val menu: List
 /** Largest HUD thumbnail the room accepts (data URL length). */
 const val HUD_THUMB_BYTES = 60_000
 
+/** Largest idea picture in a HUD (data URL length); the phone sends small copies to the lens. */
+const val IDEA_IMAGE_BYTES = 40_000
+
 enum class RoomState { OFF, CONNECTING, ONLINE }
 
 interface RoomListener {
@@ -83,6 +98,25 @@ interface RoomListener {
 
     /** The wearer dictated something: an instruction, or an answer to a question. */
     fun onSay(text: String)
+
+    /** The room no longer exists (expired, or unknown to the server); the room has stopped. */
+    fun onGone()
+}
+
+private val SHOOT_REPLY = Regex("""^(shoot|yes|yeah|yep|ok|okay|sure|go|go ahead|take it|do it)\b""")
+private val SKIP_REPLY = Regex("""\b(no|nope|skip|don't|do not|stop|wait|not yet|cancel)\b""")
+
+/**
+ * A reply to "Take shot n?" (shared/protocol.ts shotReply): true to shoot,
+ * false to skip, null when it is neither (a correction, say).
+ */
+fun shotReply(text: String): Boolean? {
+    val t = text.trim().lowercase()
+    return when {
+        SHOOT_REPLY.containsMatchIn(t) -> true
+        SKIP_REPLY.containsMatchIn(t) -> false
+        else -> null
+    }
 }
 
 /**
@@ -138,23 +172,9 @@ class GlassesRoom(
         listener.onState(RoomState.CONNECTING, glasses)
         val req = Request.Builder().url(worker.webSocketUrl(code, token)).build()
         ws = worker.socketClient.newWebSocket(req, object : WebSocketListener() {
+            // Callbacks arrive on OkHttp's threads; the room's state is only touched in [scope].
             override fun onOpen(webSocket: WebSocket, response: Response) {
-                retry = 0
-                listener.onState(RoomState.ONLINE, glasses)
-                lastHud?.let { hud ->
-                    webSocket.send(buildJsonObject {
-                        put("t", "hud")
-                        put("hud", hud)
-                    }.toString())
-                }
-                ping?.cancel()
-                // The room answers "ping" with "pong" without waking up.
-                ping = scope.launch {
-                    while (true) {
-                        delay(20_000)
-                        webSocket.send("ping")
-                    }
-                }
+                scope.launch { opened(webSocket) }
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
@@ -167,9 +187,38 @@ class GlassesRoom(
                 scope.launch { handle(msg) }
             }
 
+            // The server closed: OkHttp reports onClosed only once we close too, so acknowledge and reconnect now.
+            override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                webSocket.close(1000, null)
+                dropped(webSocket)
+            }
+
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) = dropped(webSocket)
-            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) = dropped(webSocket)
+
+            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                // The upgrade was refused: 404 for a room that expired or never existed, 403 for a bad token.
+                val code = response?.code
+                if (code == 404 || code == 403) gone(webSocket) else dropped(webSocket)
+            }
         })
+    }
+
+    private fun opened(socket: WebSocket) {
+        // A socket replaced or stopped before it opened stays out of it.
+        if (socket !== ws || closed) return
+        retry = 0
+        listener.onState(RoomState.ONLINE, glasses)
+        lastHud?.let { hud ->
+            socket.send(buildJsonObject {
+                put("t", "hud")
+                put("hud", hud)
+            }.toString())
+        }
+        ping?.cancel()
+        // The room answers "ping" with "pong" without waking up. Ends once the socket stops taking messages.
+        ping = scope.launch {
+            do delay(20_000) while (socket.send("ping"))
+        }
     }
 
     private fun handle(msg: JsonObject) {
@@ -181,13 +230,14 @@ class GlassesRoom(
             }
             "say" -> (msg["text"] as? JsonPrimitive)?.contentOrNull?.let { listener.onSay(it) }
             "pairing" -> {
-                val p = msg["pattern"] as? JsonPrimitive
-                val pattern = if (p == null || p is JsonNull) null else p.contentOrNull
+                // contentOrNull is null for JSON null too.
+                val pattern = (msg["pattern"] as? JsonPrimitive)?.contentOrNull
                 listener.onPairing(pattern, (msg["expiresIn"] as? JsonPrimitive)?.longOrNull ?: 0)
             }
         }
     }
 
+    /** Reconnects with backoff. Once per socket: later callbacks for it find [ws] changed. */
     private fun dropped(socket: WebSocket) {
         scope.launch {
             if (socket !== ws || closed) return@launch
@@ -196,6 +246,18 @@ class GlassesRoom(
             listener.onState(RoomState.CONNECTING, glasses)
             delay(minOf(10_000L, 500L shl minOf(retry++, 5)))
             if (!closed) connect()
+        }
+    }
+
+    /** The room is gone for good: no reconnecting, and the owner is told. */
+    private fun gone(socket: WebSocket) {
+        scope.launch {
+            if (socket !== ws || closed) return@launch
+            closed = true
+            ping?.cancel()
+            ws = null
+            listener.onState(RoomState.OFF, 0)
+            listener.onGone()
         }
     }
 }

@@ -84,24 +84,6 @@ export function resize(img: Rgba, w: number, h: number): Rgba {
   return { w, h, rgba: out };
 }
 
-/** Box downscale of 8-bit RGBA by an integer factor. */
-export function downscale(rgba: Uint8ClampedArray, w: number, h: number, f: number): Uint8ClampedArray {
-  const ow = Math.floor(w / f);
-  const oh = Math.floor(h / f);
-  const out = new Uint8ClampedArray(ow * oh * 4);
-  const n = f * f;
-  for (let y = 0; y < oh; y++) {
-    for (let x = 0; x < ow; x++) {
-      for (let c = 0; c < 4; c++) {
-        let sum = 0;
-        for (let dy = 0; dy < f; dy++) for (let dx = 0; dx < f; dx++) sum += rgba[((y * f + dy) * w + x * f + dx) * 4 + c];
-        out[(y * ow + x) * 4 + c] = sum / n;
-      }
-    }
-  }
-  return out;
-}
-
 /** Pixel counts per level: luminance (Rec. 709 weights), red, green, blue; 256 bins each. */
 export function histogram(img: Rgba): number[][] {
   const hist = [0, 1, 2, 3].map(() => new Array<number>(256).fill(0));

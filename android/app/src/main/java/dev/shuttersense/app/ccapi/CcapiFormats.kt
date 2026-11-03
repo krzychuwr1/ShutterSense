@@ -112,6 +112,8 @@ fun detailFrames(records: List<FramedRecord>): List<LiveDetail> {
 internal fun parseObject(bytes: ByteArray): JsonObject =
     CcapiClient.json.parseToJsonElement(bytes.decodeToString()) as? JsonObject ?: JsonObject(emptyMap())
 
+private val CONTENT_LENGTH = Regex("""^content-length:\s*(\d+)""", RegexOption.IGNORE_CASE)
+
 /** The JPEG parts of a multipart/x-mixed-replace stream (LF or CRLF line ends). */
 class MultipartReader(input: InputStream, private val boundary: String = "boundary") {
     private val input = input.buffered()
@@ -127,7 +129,7 @@ class MultipartReader(input: InputStream, private val boundary: String = "bounda
         while (true) {
             val line = readLine() ?: return null
             if (line.isEmpty()) break
-            Regex("""^content-length:\s*(\d+)""", RegexOption.IGNORE_CASE).find(line)?.let { length = it.groupValues[1].toInt() }
+            CONTENT_LENGTH.find(line)?.let { length = it.groupValues[1].toInt() }
         }
         if (length < 0) return null
         val data = ByteArray(length)

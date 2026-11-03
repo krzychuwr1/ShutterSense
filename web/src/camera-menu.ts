@@ -118,8 +118,7 @@ export function menuGuide(screens: MenuScreen[]): HTMLElement {
   show();
   if (auto && screens.length > 1) {
     const timer = setInterval(() => {
-      if (!root.isConnected) return clearInterval(timer);
-      if (!auto) return;
+      if (!auto || !root.isConnected) return clearInterval(timer);
       i = (i + 1) % screens.length;
       show();
     }, 2600);

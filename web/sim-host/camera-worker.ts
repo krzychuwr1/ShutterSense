@@ -1,37 +1,14 @@
 // The virtual camera for the Android app, in a worker so rendering never
 // blocks the page that relays requests. Same image loader and JPEG encoder as
-// the web demo's worker; answers go back already base64-encoded, which is what
-// the app's bridge takes.
+// the web demo's worker (web/src/sim/codec.ts); answers go back already
+// base64-encoded, which is what the app's bridge takes.
 
 import { VirtualCamera } from "../../camsim/camera.ts";
 import { handleSim } from "../../camsim/control.ts";
-import type { RgbaImage } from "../../camsim/scenes.ts";
+import { encodeJpeg, imageLoader } from "../src/sim/codec.ts";
 import type { FromWorker, HostReply, HostRequest, WorkerInit } from "./protocol.ts";
 
 const post = (msg: FromWorker) => (self as unknown as Worker).postMessage(msg);
-
-async function encodeJpeg(rgba: Uint8ClampedArray, w: number, h: number, quality: number): Promise<Uint8Array> {
-  const canvas = new OffscreenCanvas(w, h);
-  const ctx = canvas.getContext("2d")!;
-  ctx.putImageData(new ImageData(new Uint8ClampedArray(rgba), w, h), 0, 0);
-  const blob = await canvas.convertToBlob({ type: "image/jpeg", quality });
-  return new Uint8Array(await blob.arrayBuffer());
-}
-
-/** Scene images from the app's assets: decoded without colour management, alpha not premultiplied. */
-function imageLoader(base: string) {
-  return async (path: string): Promise<RgbaImage> => {
-    const res = await fetch(new URL(path, base));
-    if (!res.ok) throw new Error(`${path}: HTTP ${res.status}`);
-    const bitmap = await createImageBitmap(await res.blob(), { premultiplyAlpha: "none", colorSpaceConversion: "none" });
-    const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
-    const ctx = canvas.getContext("2d", { willReadFrequently: true }) as OffscreenCanvasRenderingContext2D;
-    ctx.drawImage(bitmap, 0, 0);
-    bitmap.close();
-    const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
-    return { w: canvas.width, h: canvas.height, data };
-  };
-}
 
 function toBase64(bytes: Uint8Array): string {
   let s = "";

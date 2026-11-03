@@ -5,7 +5,6 @@ import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -43,6 +42,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
@@ -54,8 +54,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowForward
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.ArrowUpward
+import androidx.compose.material.icons.rounded.Bookmark
 import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.ErrorOutline
+import androidx.compose.material.icons.rounded.Lightbulb
 import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.PhotoCamera
 import androidx.compose.material.icons.rounded.Stop
@@ -95,6 +98,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import dev.shuttersense.app.agent.Idea
 import dev.shuttersense.app.agent.StepEntry
 import dev.shuttersense.app.agent.StepKind
 import dev.shuttersense.app.ui.AppViewModel
@@ -111,6 +115,7 @@ import dev.shuttersense.app.ui.components.PhotoViewer
 import dev.shuttersense.app.ui.components.PrimaryButton
 import dev.shuttersense.app.ui.components.RoundIcon
 import dev.shuttersense.app.ui.components.SecondaryButton
+import dev.shuttersense.app.ui.components.SettingChip
 import dev.shuttersense.app.ui.components.StatusDot
 import dev.shuttersense.app.ui.components.TextAction
 import dev.shuttersense.app.ui.components.rememberDataUrlImage
@@ -227,7 +232,7 @@ private fun EmptyState(vm: AppViewModel) {
 private fun dotColor(kind: StepKind): Color = when (kind) {
     StepKind.THINK -> Palette.Faint
     StepKind.LOOK -> Palette.Muted
-    StepKind.SETTINGS, StepKind.SHOT, StepKind.ASK, StepKind.GUIDE -> Palette.Accent
+    StepKind.SETTINGS, StepKind.SHOT, StepKind.ASK, StepKind.GUIDE, StepKind.PRESET, StepKind.IDEAS -> Palette.Accent
     StepKind.TELL -> Palette.Text
     StepKind.DONE -> Palette.Good
     StepKind.ERROR -> Palette.Bad
@@ -335,6 +340,11 @@ private fun AgentStep(s: StepEntry, vm: AppViewModel, open: (ImageBitmap, String
                 }
             }
             StepKind.GUIDE -> GuideCard(s, isLive(s, vm), vm)
+            StepKind.PRESET -> PresetCard(s)
+            StepKind.IDEAS -> {
+                Text(s.text, style = MaterialTheme.typography.bodyMedium, color = Palette.Text)
+                IdeaRow(s.ideas, vm, open)
+            }
             StepKind.DONE -> {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Rounded.Check, null, Modifier.size(16.dp), tint = Palette.Good)
@@ -415,6 +425,65 @@ private fun GuideCard(s: StepEntry, live: Boolean, vm: AppViewModel) {
                 PrimaryButton("Done", { vm.answer("Done") }, Modifier.weight(1f), icon = Icons.Rounded.Check)
                 SecondaryButton("Skip", { vm.answer("Skip") }, Modifier.weight(1f), height = 56.dp)
             }
+        }
+    }
+}
+
+/** A preset the agent saved: its name, what it is for, and its settings. */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun PresetCard(s: StepEntry) {
+    Column(
+        Modifier.fillMaxWidth().widthIn(max = 460.dp).clip(RoundedCornerShape(22.dp)).background(Palette.Raised).padding(20.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(28.dp).clip(CircleShape).background(Palette.AccentSoft), contentAlignment = Alignment.Center) {
+                Icon(Icons.Rounded.Bookmark, null, Modifier.size(15.dp), tint = Palette.Accent)
+            }
+            Spacer(Modifier.width(10.dp))
+            Eyebrow("Saved preset", color = Palette.Accent)
+        }
+        Spacer(Modifier.height(14.dp))
+        Text(s.title.orEmpty(), style = MaterialTheme.typography.headlineSmall, color = Palette.Text)
+        if (s.text.isNotEmpty()) {
+            Spacer(Modifier.height(6.dp))
+            Text(s.text, style = MaterialTheme.typography.bodyMedium, color = Palette.Muted)
+        }
+        if (s.detail.isNotEmpty()) {
+            Spacer(Modifier.height(14.dp))
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                s.detail.forEach { SettingChip(it, container = Palette.Raised2) }
+            }
+        }
+    }
+}
+
+/** Picture ideas side by side, to swipe through; "Try this" tells the agent which one. */
+@Composable
+private fun IdeaRow(ideas: List<Idea>, vm: AppViewModel, open: (ImageBitmap, String?) -> Unit) {
+    LazyRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        items(ideas) { idea -> IdeaCard(idea, vm, open) }
+    }
+}
+
+@Composable
+private fun IdeaCard(idea: Idea, vm: AppViewModel, open: (ImageBitmap, String?) -> Unit) {
+    val img = rememberDataUrlImage(idea.image)
+    Column(Modifier.width(220.dp).clip(RoundedCornerShape(18.dp)).background(Palette.Raised)) {
+        Box(
+            Modifier.fillMaxWidth().aspectRatio(0.8f).background(Palette.Raised2)
+                .clickable(enabled = img != null) { img?.let { open(it, idea.title) } },
+            contentAlignment = Alignment.Center,
+        ) {
+            if (img != null) Image(img, idea.title, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+            // No picture (the image model failed, or is still a placeholder): the idea stands as text.
+            else Icon(Icons.Rounded.Lightbulb, null, Modifier.size(28.dp), tint = Palette.Faint)
+        }
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(idea.title, style = MaterialTheme.typography.titleMedium, color = Palette.Text)
+            if (idea.direction.isNotEmpty()) Text(idea.direction, style = MaterialTheme.typography.bodySmall, color = Palette.Muted)
+            Spacer(Modifier.height(6.dp))
+            SecondaryButton("Try this", { vm.tryIdea(idea) }, Modifier.fillMaxWidth(), height = 40.dp)
         }
     }
 }
@@ -674,6 +743,23 @@ private fun RunSettingsSheet(vm: AppViewModel, onDismiss: () -> Unit) {
                     Text("${vm.maxShots}", Modifier.width(24.dp), style = MaterialTheme.typography.titleMedium.merge(Numeric), color = Palette.Text, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
                     TextAction("+", { if (vm.maxShots < 10) vm.maxShots++; vm.saveSettings() }, color = Palette.Text)
                 }
+            }
+            Row(
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).clickable {
+                    onDismiss()
+                    vm.showPresets = true
+                }.padding(vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("Saved presets", style = MaterialTheme.typography.bodyLarge)
+                    Text(
+                        if (vm.presets.isEmpty()) "Say “save this as club night” to keep a setup" else "${vm.presets.size} saved · use one or delete it",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Palette.Muted,
+                    )
+                }
+                Icon(Icons.Rounded.ChevronRight, null, tint = Palette.Faint)
             }
             if (vm.started && !vm.busy) {
                 Spacer(Modifier.height(12.dp))

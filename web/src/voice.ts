@@ -20,10 +20,19 @@ export class Recorder {
     this.stream = await navigator.mediaDevices.getUserMedia({
       audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
     });
-    this.ctx = new AudioContext();
-    const src = this.ctx.createMediaStreamSource(this.stream);
-    // ScriptProcessor is deprecated but universally available and plenty for push-to-talk.
-    this.node = this.ctx.createScriptProcessor(4096, 1, 1);
+    let src: MediaStreamAudioSourceNode;
+    try {
+      this.ctx = new AudioContext();
+      src = this.ctx.createMediaStreamSource(this.stream);
+      // ScriptProcessor is deprecated but universally available and plenty for push-to-talk.
+      this.node = this.ctx.createScriptProcessor(4096, 1, 1);
+    } catch (e) {
+      // Don't leave the microphone on.
+      this.stream.getTracks().forEach((t) => t.stop());
+      void this.ctx?.close();
+      this.ctx = null;
+      throw e;
+    }
     this.chunks = [];
     this.node.onaudioprocess = (e) => this.chunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
     src.connect(this.node);

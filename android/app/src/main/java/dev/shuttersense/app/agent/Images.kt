@@ -82,12 +82,18 @@ class AndroidImageTools : ImageTools {
         val bmp = if (scale < 1.0) {
             Bitmap.createScaledBitmap(decoded, (decoded.width * scale).roundToInt(), (decoded.height * scale).roundToInt(), true)
         } else decoded
-        val out = ByteArrayOutputStream()
-        bmp.compress(Bitmap.CompressFormat.JPEG, (quality * 100).roundToInt(), out)
-        val pixels = IntArray(bmp.width * bmp.height)
-        bmp.getPixels(pixels, 0, bmp.width, 0, 0, bmp.width, bmp.height)
-        val stats = measure(pixels, bmp.width, bmp.height)
-        val url = "data:image/jpeg;base64," + Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
-        PreparedImage(url, bmp.width, bmp.height, stats)
+        try {
+            val out = ByteArrayOutputStream()
+            bmp.compress(Bitmap.CompressFormat.JPEG, (quality * 100).roundToInt(), out)
+            val pixels = IntArray(bmp.width * bmp.height)
+            bmp.getPixels(pixels, 0, bmp.width, 0, 0, bmp.width, bmp.height)
+            val stats = measure(pixels, bmp.width, bmp.height)
+            val url = "data:image/jpeg;base64," + Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
+            PreparedImage(url, bmp.width, bmp.height, stats)
+        } finally {
+            // Only the encoded copy is kept; the pixels can go now rather than whenever the GC gets to them.
+            decoded.recycle()
+            bmp.recycle()
+        }
     }
 }

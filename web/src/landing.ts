@@ -61,6 +61,7 @@ function beforeAfter(root: HTMLElement) {
   const knob = $(root, ".ba-knob");
   let dragging = false;
   let hint = 0;
+  let touched = false;
   const set = (p: number) => {
     p = Math.max(0, Math.min(100, p));
     ba.style.setProperty("--pos", `${p}%`);
@@ -71,7 +72,11 @@ function beforeAfter(root: HTMLElement) {
     const r = ba.getBoundingClientRect();
     set(((e.clientX - r.left) / r.width) * 100);
   };
-  const stopHint = () => cancelAnimationFrame(hint);
+  // The visitor took over, possibly before the sweep began: it must not start afterwards.
+  const stopHint = () => {
+    touched = true;
+    cancelAnimationFrame(hint);
+  };
   ba.addEventListener("pointerdown", (e) => {
     stopHint();
     dragging = true;
@@ -104,7 +109,7 @@ function beforeAfter(root: HTMLElement) {
     set(pa + (pb - pa) * ease((t - ta) / (tb - ta)));
     hint = requestAnimationFrame(tick);
   };
-  setTimeout(() => (hint = requestAnimationFrame(tick)), 900);
+  setTimeout(() => touched || (hint = requestAnimationFrame(tick)), 900);
 }
 
 // ---------------------------------------------------------------- the two paths

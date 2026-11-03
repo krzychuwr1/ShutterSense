@@ -3,6 +3,7 @@
 // which show the HUD and send dictated instructions. Identical over
 // WebSocket and over the SSE + POST fallback.
 
+import type { Idea } from "./agent-api.ts";
 import type { MenuScreen } from "./menu.ts";
 
 export type Role = "glasses" | "phone";
@@ -28,6 +29,8 @@ export interface HudState {
   question: { text: string; options: string[] } | null;
   /** A setting the photographer changes by hand, with the path through the camera's menus. */
   guide: { setting: string; steps: string[]; menu: MenuScreen[] } | null;
+  /** Picture ideas (poses, compositions) to flip through; each image at most IDEA_IMAGE_BYTES. */
+  ideas: Idea[];
 }
 
 export const EMPTY_HUD: HudState = {
@@ -42,6 +45,7 @@ export const EMPTY_HUD: HudState = {
   summary: null,
   question: null,
   guide: null,
+  ideas: [],
 };
 
 export interface Presence { glasses: number; phones: number }
@@ -76,3 +80,18 @@ export const PATTERN_TTL_MS = 5 * 60_000;
 
 /** Largest HUD thumbnail the room accepts (data URL length). */
 export const HUD_THUMB_BYTES = 60_000;
+
+/** Largest idea picture in a HUD (data URL length); the phone sends small copies to the lens. */
+export const IDEA_IMAGE_BYTES = 40_000;
+
+/**
+ * A reply to "Take shot n?" typed, dictated or picked on the lens: true to
+ * shoot, false to skip, null when it's neither (a correction, which the phone
+ * queues before skipping the shot so the agent sees it next).
+ */
+export function shotReply(text: string): boolean | null {
+  const t = text.trim().toLowerCase();
+  if (/^(shoot|yes|yeah|yep|ok|okay|sure|go|go ahead|take it|do it)\b/.test(t)) return true;
+  if (/\b(no|nope|skip|don't|do not|stop|wait|not yet|cancel)\b/.test(t)) return false;
+  return null;
+}

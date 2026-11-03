@@ -249,10 +249,36 @@ const SPECS: Record<string, SceneSpec> = {
       metering: "evaluative", afoperation: "oneshot", afmethod: "face+tracking", picturestyle: "auto",
     },
   },
+  // The same park as "group" on a bright day: the friend stands in the tree's
+  // deep shade, the meadow behind is in full sun, about five stops brighter.
+  // No single exposure holds both, and the photographer wants natural light,
+  // so the fix is HDR Mode, which the control API can't switch on.
+  shade: {
+    id: "shade",
+    title: "Portrait in deep shade, sunlit meadow",
+    blurb: "Midday sun, your friend in the tree's shade. Expose for her face and the meadow burns out; expose for the meadow and she goes dark.",
+    goals: ["Natural light, no flash: keep her face and the sunny meadow", "Nothing blown out, nothing too dark", "Bright, natural portrait with the green meadow behind"],
+    layers: [
+      {
+        name: "park", file: "scenes/group/plate.jpg", depth: 30, ground: { horizon: 0.322, k: 2.18, far: 30 },
+        ev: [[0, 15], [0.3, 15], [0.45, 14.4], [1, 14.4]], kelvin: 5500, highlights: { knee: 0.85, gain: 4, box: [0.3, 0, 1, 0.3] },
+      },
+      { name: "friend", file: "scenes/group/front.png", depth: 2.1, ev: 9.2, kelvin: 7500 },
+    ],
+    lens: { name: "35mm F1.4", focal: 35, maxAperture: 1.4, minAperture: 16, minFocus: 0.3 },
+    subject: { layer: "friend", face: true },
+    awbK: 5600,
+    lightK: 7500,
+    handheld: true,
+    initial: {
+      shootingmode: "av", av: "f2.8", tv: "1/500", iso: "auto", exposure: "+0.0", wb: "auto", colortemperature: 5200,
+      metering: "evaluative", afoperation: "oneshot", afmethod: "face+tracking", picturestyle: "auto",
+    },
+  },
 };
 
 /** Picker order: the scenes where a little-known setting is the fix come first. */
-export const SCENE_IDS = ["concert", "gym", "dog", "group", "dinner"].filter((id) => id in SPECS);
+export const SCENE_IDS = ["concert", "gym", "shade", "dog", "group", "dinner"].filter((id) => id in SPECS);
 
 /** Scene metadata without loading the pixels (for pickers). */
 export const SCENE_INFO = SCENE_IDS.map((id) => {
@@ -322,7 +348,7 @@ function bounds(l: Layer) {
       if (y > y1) y1 = y;
     }
   }
-  return { x: x0 / l.w, y: y0 / l.h, w: (x1 - x0) / l.w, h: (y1 - y0) / l.h };
+  return { x: x0 / l.w, y: y0 / l.h, w: (x1 - x0 + 1) / l.w, h: (y1 - y0 + 1) / l.h };
 }
 
 /** A soft dark ellipse under the subject's lowest point, painted beneath it. */

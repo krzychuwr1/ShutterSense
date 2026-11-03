@@ -271,7 +271,6 @@ export const SETTINGS: SettingDef[] = [
 ];
 
 export const SETTING_BY_PATH = new Map(SETTINGS.map((s) => [s.path, s]));
-export const SETTING_BY_KEY = new Map(SETTINGS.map((s) => [s.key, s]));
 
 export function defaults(): Record<string, unknown> {
   const out: Record<string, unknown> = {};
@@ -291,7 +290,7 @@ function emptiedField(a: FieldAbility) {
 /** The setting as GET reports it: emptied when not changeable now (or when the caller says so). */
 export function report(s: SettingDef, c: SettingsContext, empty = !s.available(c)): Record<string, unknown> {
   const ab = s.ability(c);
-  const value = s.key === "picturestyle_userdef1" || s.key === "picturestyle_userdef2" || s.key === "picturestyle_userdef3"
+  const value = USER_STYLES.some((u) => s.key === `picturestyle_${u}`)
     ? { basepicturestyle: c.values[`${s.key}_basepicturestyle`], ...(c.values[s.key] as object) }
     : c.values[s.key];
   if (s.noAbility) return { value: empty ? "" : value };

@@ -1,5 +1,8 @@
 package dev.shuttersense.app
 
+import dev.shuttersense.app.agent.CameraTools
+import dev.shuttersense.app.agent.ImageTools
+import dev.shuttersense.app.agent.PreparedImage
 import dev.shuttersense.app.ccapi.CameraAddress
 import dev.shuttersense.app.ccapi.CameraHttp
 import dev.shuttersense.app.ccapi.CcapiClient
@@ -19,6 +22,7 @@ import dev.shuttersense.app.ccapi.splitJpegs
 import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -43,6 +47,7 @@ import org.junit.Before
 import org.junit.Test
 import java.io.ByteArrayOutputStream
 import java.time.Instant
+import java.util.concurrent.TimeUnit
 
 /** A framed record: FF 00 <type> <size> <data> FF FF, the size big- or little-endian. */
 fun record(type: Int, data: ByteArray, bigEndian: Boolean = true): ByteArray {
@@ -464,6 +469,33 @@ class CcapiClientTest {
         // The read-only base of a user style is left out of the change.
         c.setPictureStyleDetail("userdef1", mapOf("contrast" to -1))
         assertEquals("""{"value":{"contrast":-1}}""", camera.putBodies.last())
+    }
+
+    @Test
+    fun agentWbShiftRejectsAMalformedFieldAndKeepsAnOmittedOne() = runBlocking<Unit> {
+        val tools = CameraTools(connected(), object : ImageTools {
+            override suspend fun prepare(jpeg: ByteArray, maxSide: Int, quality: Double): PreparedImage = error("no images in this test")
+        })
+        val bad = tools.set(mapOf("wbshift" to Json.parseToJsonElement("""{"ba":"oops","mg":2}""")))
+        assertEquals(listOf("wbshift.ba must be a whole number from -9 to 9 in steps of 1."), bad.errors)
+        assertTrue(camera.requests.none { it.startsWith("PUT") })
+        val ok = tools.set(mapOf("wbshift" to Json.parseToJsonElement("""{"mg":2}""")))
+        assertEquals(emptyList<String>(), ok.errors)
+        assertEquals(mapOf("ba" to 0, "mg" to 2), camera.wbshift)
+    }
+
+    @Test
+    fun cancellingDuringABodyReadCancelsTheCall() = runBlocking<Unit> {
+        // Headers at once, then a body far slower than any timeout here.
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest) = MockResponse().setBody("x".repeat(100)).throttleBody(1, 1, TimeUnit.SECONDS)
+        }
+        val url = server.url("/")
+        val transport = CameraHttp.transport(CameraAddress(url.host, url.port))
+        val started = System.currentTimeMillis()
+        val r = withTimeoutOrNull(500) { transport.request("GET", "/slow", null, emptyMap()) }
+        assertNull(r)
+        assertTrue("took ${System.currentTimeMillis() - started} ms", System.currentTimeMillis() - started < 5_000)
     }
 
     @Test
