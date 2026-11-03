@@ -1,7 +1,11 @@
 {
-  // One Worker: the web app as static assets, /api/* handled by worker/index.ts.
+  // Locally (`npm run dev:worker`) this one Worker serves the web app and /api/*.
+  // Deployed, it only hosts the Durable Objects for the Pages site
+  // (pages/wrangler.jsonc) and has no public URL.
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "second-shooter",
+  "name": "shuttersense-core",
+  "workers_dev": false,
+  "preview_urls": false,
   "main": "worker/index.ts",
   "compatibility_date": "2026-09-01",
   "assets": {

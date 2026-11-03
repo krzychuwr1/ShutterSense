@@ -1,22 +1,22 @@
-# Second Shooter
+# Shutter Sense
 
 **An AI agent that works your camera for you.**
 
-You say what you want from the shot: *"sharp shot of the dog, background blurred"*, *"she's backlit, fix it"*, *"make it moody"*. The agent does the rest. It looks through the camera's live view, changes the camera's settings, takes a test shot, looks at the photo it got, and tries again until the shot matches what you asked for. Then it tells you what it changed and why, in photography terms:
+You say what you want from the shot: *"shoot silently, but get rid of the dark stripes"*, *"freeze the dog mid-stride"*, *"get all three of them sharp"*. The agent does the rest. It looks through the camera's live view, changes the camera's settings, takes a test shot, looks at the photo it got, and tries again until the shot matches what you asked for. Then it tells you what it changed and why, in photography terms:
 
-> She was underexposed against the bright sunset, so I switched to partial metering, opened up from f/5.6 to f/2.0 and set exposure compensation to +1 EV (+1⅔ EV proved too washed out). Her face is now properly bright with a soft background; the trade-off is a largely blown-out sky.
+> The dark stripes were high-frequency LED flicker, worst with the silent electronic shutter at 1/2000 s. I kept the electronic shutter, ran high-frequency flicker detection (1310 Hz), and enabled HF anti-flicker at its calculated 1/1307 s, so each exposure spans whole flicker periods. The frame is now clean and evenly lit, and still silent.
 
 This isn't a chatbot that comments on photos. The agent operates a real mirrorless camera over Wi-Fi through Canon's Camera Control API (CCAPI) and checks its own work on the actual photo. With **Ray-Ban Display**, your eye stays at the viewfinder and your hands on the grip: the lens shows what the agent is doing and each settings change, and you correct it by voice ("a bit warmer").
 
 ## Try it without a camera
 
-The web demo runs the phone app's agent loop in your browser against a **simulated camera** that speaks CCAPI:
+The website's front page explains how the pieces fit together, with an animated diagram. **Try the simulated experience** (`/try`) runs the phone app's agent loop in your browser against a **simulated camera** that speaks CCAPI, with a simulated glasses lens next to it:
 
-1. `npm install`, then `npm run dev:worker` (it needs a Meta Model API key in `.dev.vars`, see [Setup](#setup)), and open http://127.0.0.1:8790.
-2. Pick a scene on the right: **Backlit portrait**, **Dog running in the park** or **Birthday dinner indoors**. Each one starts with camera settings a photographer would recognise as wrong.
-3. In the phone on the left, tap an example goal or type your own. Watch the step log: what the agent looks at, every settings change as a diff (`Shutter 1/60 s → 1/1000 s`), each test shot, and the final summary with a before/after slider. The camera's rear screen updates live as the agent changes settings, and **CCAPI traffic** lists every request the app sent.
+1. `npm install`, then `npm run dev:worker` (it needs a Meta Model API key in `.dev.vars`, see [Setup](#setup)), open http://127.0.0.1:8790 and click **Try the simulated experience**.
+2. Pick a scene: **Club gig under LED lights**, **Basketball under fluorescent lights**, **Dog running in the park**, **Group portrait in the shade** or **Birthday dinner indoors**. Each one starts with camera settings a photographer would recognise as wrong, and several need a setting most people never touch.
+3. In the phone on the left, tap an example goal or type your own. Watch the step log: what the agent looks at, every settings change as a diff (`Shutter 1/60 s → 1/1000 s`), each test shot, and the final summary with a before/after slider. The camera's rear screen updates live as the agent changes settings.
 4. While it works, or after it's done, type a correction: *"a bit warmer"*, *"keep more of the sky"*.
-5. **Connect glasses → Open simulated glasses** opens the 600×600 glasses app. It pairs itself by swiping the arrow pattern, just as real glasses would. In that window the arrow keys are the D-pad, <kbd>Enter</kbd> opens "Tell the agent" (dictation on real glasses) and <kbd>Esc</kbd> is Back.
+5. **Connect simulated glasses**, next to the camera's rear screen, loads the 600×600 glasses app into a lens on the page. It pairs itself by swiping the phone's arrow pattern, just as real glasses would, then shows each step, settings change and shot. The buttons under it are the Neural Band's gestures: arrows to move, ● to select or dictate ("Tell the agent"), Back. With the lens focused, the arrow keys, <kbd>Enter</kbd> and <kbd>Esc</kbd> work too.
 
 ## How it works
 
@@ -41,8 +41,9 @@ The web demo runs the phone app's agent loop in your browser against a **simulat
 | Tool | What it does |
 | --- | --- |
 | `get_camera_state` | Mode, every changeable setting with its current value and the exact options the camera accepts now, camera-chosen values in auto modes, battery |
-| `look` | One live-view frame, downscaled, plus brightness numbers |
-| `set_settings` | Several changes at once, validated against the camera's ability lists. An invalid value returns a precise error listing the valid options. Allow-listed to exposure, white balance, metering, AF, drive and picture style; never storage, formats, network or power |
+| `look` | One live-view frame, downscaled, plus brightness numbers; optionally magnified 5× or 10× around the AF point to check focus |
+| `set_settings` | Several changes at once, validated against the camera's ability lists. An invalid value returns a precise error listing the valid options. Allow-listed to exposure, white balance (and WB shift), metering, AF and tracking, drive, flash, shutter type, aspect ratio, picture style and its contrast, saturation, sharpness and colour tone; never storage, formats, network or power |
+| `focus` | Puts the AF point on a spot in the frame (switching tracking AF to 1-point), for when autofocus picks the wrong thing |
 | `shoot` | Shutter (with or without AF), waits for the new file in event polling, downloads a display-size copy, and returns the photo, the exposure the camera actually used, and brightness numbers |
 | `tell_user`, `ask_user` | Short notes and questions, shown on the phone and the lens |
 | `finish` | The summary |
@@ -60,16 +61,19 @@ The client works the same way in TypeScript ([`ccapi/client.ts`](ccapi/client.ts
 - Mode changes on cameras with a physical dial switch on "ignore shooting mode dial" first.
 - Live view with retries, the shutter with a fallback to the manual half/full press, event polling (`timeout=short` on `ver110`, `continue=off` on `ver100`), and downloads of `kind=display` with a fallback to `main`.
 - In auto modes, the values the camera actually picked come from `effective_value_*` in event polling.
+- Every other endpoint has a typed method too: device status, storage, clock and other camera functions, picture style detail and WB shift, AF start/stop, focus steps, the AF point, magnified live view and live-view info (histogram, AF frames), live-view streams, movie mode and recording, event monitoring, and contents browsing, paging, file info, range downloads, rotate/protect/rate and delete.
 - Android only: optional digest auth, and HTTP or HTTPS, with the self-signed-certificate exception scoped to the camera client.
 
 ### The simulated camera
 
 [`camsim/`](camsim) is a virtual mirrorless camera that answers CCAPI the way a camera with a physical mode dial does: discovery, per-mode emptied settings, `400 Invalid parameter`, `503 Device busy`, live view that must be started, files that show up in event polling. Its scenes are photographs split into layers at known distances (a background plate and cut-out subjects), turned into linear radiance calibrated in EV and rendered through a physically based pipeline:
 
-- **Exposure** in real units: scene radiance is calibrated in EV, so f-number, shutter speed and ISO behave as on a real camera. Av/Tv/P/M and auto ISO are solved from a meter with evaluative, partial, spot and centre-weighted modes, so evaluative metering really does underexpose a backlit face.
-- **Depth of field** from the thin-lens model, per layer at its real distance; lawns and table tops blur progressively with distance. Live view runs wide open, as on a real camera.
+- **Exposure** in real units: scene radiance is calibrated in EV, so f-number, shutter speed and ISO behave as on a real camera. Av/Tv/P/M and auto ISO are solved from a meter with evaluative, partial, spot and centre-weighted modes, so a bright LED wall or window really does pull evaluative metering down.
+- **Depth of field** from the thin-lens model, per layer at its real distance; lawns and table tops blur progressively with distance. Live view previews the depth of field at the shooting aperture, so the rear screen matches the shot.
 - **Motion blur** of moving subjects over the exposure time, **hand shake** that grows with shutter time and focal length, and **one-shot AF** lagging behind a moving subject (servo fixes it).
-- **Noise** from shot and read noise that grows with ISO, **white balance** from colour temperature (the dinner really is lit at 2500 K, so auto white balance leaves it orange), light sources (sun, candle flames, lamps) far above white so they clip and glow, and picture styles.
+- **Noise** from shot and read noise that grows with ISO, **white balance** from colour temperature (the dinner really is lit at 2500 K, so auto white balance leaves it orange), light sources (sun, candle flames, lamps) far above white so they clip and glow, and picture styles with their fine-tuning.
+- **Flicker** from mains-powered tubes (a 100/120 Hz ripple that also shifts colour) and LED dimming: each row integrates the light over its own exposure window as the shutter crosses the frame, so short exposures change brightness from shot to shot and the electronic shutter shows bands. Anti-flicker shooting times the shot to the light's peak; high-frequency anti-flicker offers fine-step shutter speeds that last a whole number of LED periods; flicker detection reports the frequency.
+- **The rest of the body:** flash with distance fall-off and sync speed, exposure and white-balance bracketing, continuous drive and self-timers, the AF point and zone AF, manual focus steps, magnified live view with histogram and AF frames, aspect ratios, RAW files, an electronic shutter that skews fast motion, movie recording (Motion-JPEG), and a card you can browse, protect, delete from and format. Event polling reports every change.
 
 The same simulator runs in a Web Worker for the browser demo, and as a plain HTTP server for testing the Android app without a camera: `npm run sim`, then point the app at `http://<your PC>:8080`. Open that address in a browser to see the camera's screen and switch scenes.
 
@@ -91,17 +95,25 @@ echo MUSE_API_KEY=your-key > .dev.vars
 npm run dev:worker
 ```
 
-To deploy, add the key as a secret and deploy. One Worker serves the web demo and the API:
+**Deploying.** The live site is on Cloudflare Pages at https://shuttersense.pages.dev: the web app plus the API as a Pages Function ([`pages/`](pages)). The rooms, pairing, rate limits and budget are Durable Objects in a private Worker, `shuttersense-core` ([`wrangler.jsonc`](wrangler.jsonc)), which has no public URL; the Pages Function binds to them. The first time, create the Pages project and add the key to it:
 
 ```bash
-npx wrangler secret put MUSE_API_KEY
+cd pages && npx wrangler pages project create shuttersense --production-branch main --force
 ```
+
+```bash
+cd pages && npx wrangler pages secret put MUSE_API_KEY --project-name shuttersense
+```
+
+Then each deploy builds the site, updates the private Worker and publishes the Pages project:
 
 ```bash
 npm run deploy
 ```
 
-**Android app:** see [`android/README.md`](android/README.md). Enter the camera's IP (or the simulator's) and your worker's URL.
+**Voice on the glasses (optional):** the lens reads the agent's notes aloud. For natural speech, create an app on [Wit.ai](https://wit.ai) (Meta's voice service) and add its Server Access Token as `WIT_TOKEN` in `.dev.vars`, or with `npx wrangler pages secret put WIT_TOKEN --project-name shuttersense` when deployed. `WIT_VOICE` picks the voice (default `wit$Rebecca`; `GET https://api.wit.ai/voices` lists them). Without a token, the lens uses the device's own voice.
+
+**Android app:** see [`android/README.md`](android/README.md). It talks to https://shuttersense.pages.dev by default; "Try the demo" runs the simulated camera on the phone itself, or connect a real camera by IP.
 
 **Glasses:** with Developer Mode on Ray-Ban Display, install the deployed site as a web app. It opens straight to the pairing screen; tap **Connect glasses** on the phone and swipe the eight arrows it shows.
 
@@ -110,7 +122,7 @@ npm run deploy
 - `npm test`: unit tests (the CCAPI client against the simulator, exposure and metering, value formats, transcript pruning).
 - `npm run e2e -- dog "Freeze the dog mid-stride"`: the real agent loop against the simulator from the command line, through a running worker.
 - `npm run render-scenes -- out/`: renders the scenes to check them by eye, and refreshes the scene-picker thumbnails.
-- `npm run prepare-scenes -- <dir>`: turns newly generated scene layers into the simulator's assets in `web/public/scenes/`.
+- `npm run prepare-scenes -- <dir> [scene ...]`: turns newly generated scene layers into the simulator's assets in `web/public/scenes/`.
 
 ## Repository
 
