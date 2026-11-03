@@ -19,6 +19,10 @@ You say what you want from the shot: *"shoot silently, but get rid of the dark s
 This isn't a chatbot that comments on photos. It operates a mirrorless camera over Wi-Fi through Canon's Camera Control API (CCAPI) and checks its own work on the actual photo.
 
 <p align="center">
+  <img src="docs/media/setup.png" alt="The setup, in three steps. 1, a professional camera connects over Wi-Fi, and the agent sets it up and takes test shots. 2, your phone runs the AI agent: say what you want and it does the rest. 3, Ray-Ban Display shows each step on the lens, so your eye stays at the viewfinder." width="880">
+</p>
+
+<p align="center">
   <img src="docs/media/demo.gif" alt="The demo running: the agent inspects the club scene, turns on high-frequency anti-flicker, takes a test shot and reports back on the phone, the camera's rear screen and the glasses lens." width="880">
   <br><sub>The real agent on the simulated camera, sped up 3×: phone app, rear screen and Ray-Ban Display lens.</sub>
 </p>
@@ -26,7 +30,7 @@ This isn't a chatbot that comments on photos. It operates a mirrorless camera ov
 ## What it does
 
 <p align="center">
-  <img src="docs/media/results.jpg" alt="Three before and after pairs: flicker stripes removed from a concert photo, a silhouetted face recovered with HDR while the meadow keeps its detail, and a blurred running dog frozen sharp." width="880">
+  <img src="docs/media/keep-shooting.png" alt="Say what you want. Keep shooting. One agent across the three things in your hands: the camera takes the shot, the phone runs the agent, and the glasses show every step." width="880">
 </p>
 
 - **It acts, then checks.** The agent changes real settings, shoots, and judges the photo against your goal, within a shot budget you set.
