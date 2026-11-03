@@ -1,6 +1,6 @@
 {
   "extends": "../tsconfig.base.json",
   "compilerOptions": { "lib": ["ES2022"], "types": ["@cloudflare/workers-types"] },
-  "include": [".", "../shared"],
+  "include": [".", "../shared", "../pages/functions"],
   "exclude": ["../shared/**/*.test.ts"]
 }

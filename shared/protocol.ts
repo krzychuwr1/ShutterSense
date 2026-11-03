@@ -3,6 +3,8 @@
 // which show the HUD and send dictated instructions. Identical over
 // WebSocket and over the SSE + POST fallback.
 
+import type { MenuScreen } from "./menu.ts";
+
 export type Role = "glasses" | "phone";
 
 export type HudPhase = "idle" | "working" | "asking" | "done" | "error";
@@ -24,6 +26,8 @@ export interface HudState {
   message: string | null;
   summary: string | null;
   question: { text: string; options: string[] } | null;
+  /** A setting the photographer changes by hand, with the path through the camera's menus. */
+  guide: { setting: string; steps: string[]; menu: MenuScreen[] } | null;
 }
 
 export const EMPTY_HUD: HudState = {
@@ -37,6 +41,7 @@ export const EMPTY_HUD: HudState = {
   message: null,
   summary: null,
   question: null,
+  guide: null,
 };
 
 export interface Presence { glasses: number; phones: number }

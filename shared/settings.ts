@@ -93,11 +93,27 @@ export const SETTING_LABELS: Record<string, string> = {
   afmethod: "AF area",
   drive: "Drive",
   picturestyle: "Picture style",
+  flash: "Flash",
+  shuttermode: "Shutter type",
+  trackingsetting: "Tracking",
+  stillimageaspectratio: "Aspect ratio",
+  wbshift: "WB shift",
+  antiflickershoot: "Anti-flicker",
+  hfantiflickershoot: "HF anti-flicker",
+  hfflickertv: "HF flicker shutter",
+  contrast: "Contrast",
+  saturation: "Saturation",
+  sharpness_strength: "Sharpness",
+  colortone: "Colour tone",
 };
 
 export function diffLine(setting: string, from: unknown, to: unknown): string {
   const label = SETTING_LABELS[setting] ?? setting;
-  const p = (v: unknown) => (setting === "iso" ? String(v ?? "–") : prettyValue(setting, v as string));
+  const p = (v: unknown) => {
+    // Composite values such as the WB shift: "BA +2 MG 0".
+    if (v && typeof v === "object") return Object.entries(v).map(([k, n]) => `${k.toUpperCase()} ${typeof n === "number" && n > 0 ? "+" : ""}${n}`).join(" ");
+    return setting === "iso" ? String(v ?? "–") : prettyValue(setting, v as string);
+  };
   return `${label} ${p(from)} → ${p(to)}`;
 }
 

@@ -5,15 +5,20 @@
 // time, with only the latest few images attached.
 
 import { AGENT_SETTINGS, DEFAULT_MAX_SHOTS, type AgentContext, type AgentRequest, type AgentResponse, type FunctionCall } from "../shared/agent-api.ts";
+import { cleanMenu, type MenuScreen } from "../shared/menu.ts";
 import { statsLine, type CameraTools, type PreparedImage, type ShotResult } from "./camera-tools.ts";
 
-export type StepKind = "goal" | "think" | "look" | "settings" | "shot" | "tell" | "ask" | "answer" | "instruction" | "done" | "error";
+export type StepKind = "goal" | "think" | "look" | "settings" | "shot" | "guide" | "tell" | "ask" | "answer" | "instruction" | "done" | "error";
 
 export interface StepEntry {
   kind: StepKind;
   text: string;
-  /** Settings diff lines, or rejected changes. */
+  /** For "guide": the setting the photographer changes by hand. */
+  title?: string;
+  /** Settings diff lines, menu steps (guide), question options (ask), or the shot's exposure. */
   detail?: string[];
+  /** For "guide": the camera menu screens to step through. */
+  menu?: MenuScreen[];
   errors?: string[];
   image?: string;
 }
@@ -28,8 +33,8 @@ export interface RunUi {
   /** "Ask before shooting" is on: may the agent take shot `n`? */
   confirmShot(n: number, reason: string): Promise<boolean>;
   ask(question: string, options: string[], signal: AbortSignal): Promise<string>;
-  /** The run ended: finished, cancelled or failed. */
-  ended(outcome: "done" | "cancelled" | "error", summary: string | null): void;
+  /** The run ended: finished, cancelled or failed. `lens` is the summary cut to one line for the glasses. */
+  ended(outcome: "done" | "cancelled" | "error", summary: string | null, lens: string | null): void;
 }
 
 export interface AgentApi {
@@ -49,6 +54,16 @@ const MAX_ROUNDS = 30;
 const KEEP_IMAGES = 3;
 /** Extra shots a correction after "done" gets. */
 const FOLLOW_UP_SHOTS = 3;
+/** Longest summary the glasses' lens shows. */
+const LENS_MAX = 90;
+
+/** One line for the lens: the model's own short version, or the summary's first sentence, cut at a word. */
+export function lensLine(summary: string, short = ""): string {
+  const s = short.trim() || summary.trim().split(/(?<=[.!?])\s+/)[0];
+  if (s.length <= LENS_MAX) return s;
+  const cut = s.slice(0, LENS_MAX - 1);
+  return `${cut.slice(0, Math.max(cut.lastIndexOf(" "), LENS_MAX / 2)).replace(/[,;:\s]+$/, "")}…`;
+}
 
 type Item = Record<string, unknown>;
 
@@ -133,6 +148,7 @@ export class AgentRun {
     this.abort = new AbortController();
     const signal = this.abort.signal;
     let summary: string | null = null;
+    let lens: string | null = null;
     let outcome: "done" | "cancelled" | "error" = "done";
     try {
       for (let round = 0; round < MAX_ROUNDS; round++) {
@@ -146,7 +162,10 @@ export class AgentRun {
         if (!res.calls.length) {
           // Answered in text instead of finishing: treat that as the summary.
           summary = res.text || null;
-          if (summary) this.ui.step({ kind: "done", text: summary });
+          if (summary) {
+            lens = lensLine(summary);
+            this.ui.step({ kind: "done", text: summary });
+          }
           break;
         }
         for (const c of res.calls) this.input.push({ type: "function_call", call_id: c.call_id, name: c.name, arguments: c.arguments });
@@ -157,7 +176,8 @@ export class AgentRun {
           this.input.push({ type: "function_call_output", call_id: call.call_id, output });
           if (done !== undefined) {
             finished = true;
-            summary = done;
+            summary = done.summary;
+            lens = done.lens;
           }
         }
         if (finished) break;
@@ -174,12 +194,12 @@ export class AgentRun {
     } finally {
       this.running = false;
       this.ui.status("");
-      this.ui.ended(outcome, summary);
+      this.ui.ended(outcome, summary, lens);
     }
   }
 
   /** Runs one tool call. `done` is set when the run should end (finish was called). */
-  private async exec(call: FunctionCall, signal: AbortSignal): Promise<{ output: string | Item[]; done?: string }> {
+  private async exec(call: FunctionCall, signal: AbortSignal): Promise<{ output: string | Item[]; done?: { summary: string; lens: string } }> {
     let args: Record<string, unknown>;
     try {
       args = JSON.parse(call.arguments || "{}");
@@ -195,14 +215,36 @@ export class AgentRun {
           return { output: await this.camera.getState() };
         }
         case "look": {
-          this.ui.status("Looking…");
-          const { text: t, image } = await this.camera.look();
-          this.ui.step({ kind: "look", text: "Checked live view", image: image.dataUrl });
+          const zoom = Number(args.zoom) || undefined;
+          this.ui.status(zoom ? "Checking focus…" : "Looking…");
+          const { text: t, image } = await this.camera.look(zoom);
+          this.ui.step({ kind: "look", text: zoom ? `Checked focus at ${zoom}×` : "Checked live view", image: image.dataUrl });
           return { output: imageOutput(t, image) };
+        }
+        case "detect_flicker": {
+          const kind = args.kind === "high_frequency" ? "high_frequency" : "mains";
+          this.ui.status("Checking the lights for flicker…");
+          const { applied, text: t } = await this.camera.detectFlicker(kind);
+          if (applied.length) {
+            this.ui.step({ kind: "settings", text: text(args.reason, 160) || "Matched the shutter to the flickering light", detail: applied });
+            this.ui.exposure(this.camera.exposureLine(), applied);
+          } else this.ui.step({ kind: "tell", text: t.slice(0, 140) });
+          return { output: t };
+        }
+        case "focus": {
+          const x = Number(args.x);
+          const y = Number(args.y);
+          if (!Number.isFinite(x) || !Number.isFinite(y)) return { output: "ERROR: x and y must be numbers from 0 to 1." };
+          this.ui.status("Moving the AF point…");
+          const { applied, text: t } = await this.camera.focusAt(x, y);
+          this.ui.step({ kind: "settings", text: text(args.reason, 160) || "Moved the AF point", detail: applied });
+          this.ui.exposure(this.camera.exposureLine(), applied);
+          return { output: t };
         }
         case "set_settings": {
           const changes: Record<string, unknown> = {};
           for (const k of AGENT_SETTINGS) if (k in args) changes[k] = args[k];
+          if (args.style_detail && typeof args.style_detail === "object") changes.style_detail = args.style_detail;
           if (!Object.keys(changes).length) return { output: "ERROR: no settings given." };
           this.ui.status("Changing settings…");
           const { applied, errors } = await this.camera.set(changes);
@@ -237,6 +279,16 @@ export class AgentRun {
           this.ui.step({ kind: "tell", text: t });
           return { output: "Shown." };
         }
+        case "menu_steps": {
+          const setting = text(args.setting, 60);
+          const steps = Array.isArray(args.steps) ? args.steps.map((st) => text(st, 80)).filter(Boolean).slice(0, 8) : [];
+          if (!setting || !steps.length) return { output: "ERROR: give the setting and the steps." };
+          this.ui.step({ kind: "guide", title: setting, text: text(args.why, 160), detail: steps, menu: cleanMenu(args.screens) });
+          this.ui.status("Waiting for you to change it on the camera…");
+          const answer = await this.ui.ask(`Set ${setting} on the camera`, ["Done", "Skip"], signal);
+          this.ui.step({ kind: "answer", text: answer });
+          return { output: answer === "Skip" ? `The photographer skipped ${setting}.` : `The photographer says ${setting} is set (${answer}).` };
+        }
         case "ask_user": {
           const q = text(args.question, 160);
           const options = Array.isArray(args.options) ? args.options.map((o) => text(o, 40)).filter(Boolean).slice(0, 4) : [];
@@ -250,7 +302,7 @@ export class AgentRun {
         case "finish": {
           const summary = text(args.summary, 900) || "Done.";
           this.ui.step({ kind: "done", text: summary });
-          return { output: "Finished.", done: summary };
+          return { output: "Finished.", done: { summary, lens: lensLine(summary, text(args.lens, 200)) } };
         }
         default:
           return { output: `ERROR: unknown tool ${call.name}.` };

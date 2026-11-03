@@ -3,7 +3,7 @@
 // the camera; the worker owns the instructions and tool definitions, adds
 // the API key and forwards one stateless model call per step.
 
-export const TOOL_NAMES = ["get_camera_state", "look", "set_settings", "shoot", "tell_user", "ask_user", "finish"] as const;
+export const TOOL_NAMES = ["get_camera_state", "look", "set_settings", "focus", "detect_flicker", "shoot", "menu_steps", "tell_user", "ask_user", "finish"] as const;
 export type ToolName = (typeof TOOL_NAMES)[number];
 
 /** Settings the agent may change. Never storage, formats, network or power. */
@@ -20,8 +20,19 @@ export const AGENT_SETTINGS = [
   "afmethod",
   "drive",
   "picturestyle",
+  "flash",
+  "shuttermode",
+  "trackingsetting",
+  "stillimageaspectratio",
+  "wbshift",
+  "antiflickershoot",
+  "hfantiflickershoot",
+  "hfflickertv",
 ] as const;
 export type AgentSetting = (typeof AGENT_SETTINGS)[number];
+
+/** Picture style fine-tuning the agent may change (on the current style). */
+export const STYLE_DETAIL_FIELDS = ["contrast", "saturation", "sharpness_strength", "colortone"] as const;
 
 /** What the app tells the worker about the current run; it ends up in the instructions. */
 export interface AgentContext {

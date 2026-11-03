@@ -1,11 +1,13 @@
-// Second Shooter backend (one Cloudflare Worker, static assets alongside):
+// Shutter Sense backend (one Cloudflare Worker, static assets alongside):
 //   POST /api/agent        one stateless agent step, proxied to Muse (the key never leaves here)
 //   POST /api/transcribe   push-to-talk audio -> text (Muse Voice Transcribe)
+//   POST /api/speak        a line for the glasses -> speech (Wit.ai voices), when WIT_TOKEN is set
 //   /api/rooms/...         the phone <-> glasses relay, one Durable Object per session
 //   POST /api/pair         glasses trade a swiped arrow pattern for their session
 
 import { DurableObject } from "cloudflare:workers";
 import { AGENT_LIMITS, TOOL_NAMES, type AgentContext, type AgentResponse } from "../shared/agent-api.ts";
+import { cleanMenu, rewriteMenuSteps } from "../shared/menu.ts";
 import {
   CODE_ALPHABET,
   CODE_LENGTH,
@@ -22,6 +24,7 @@ import {
   type ServerMessage,
 } from "../shared/protocol.ts";
 import { createResponse, MODELS, MuseError, transcribe } from "./muse.ts";
+import { MAX_SPEECH_CHARS, speak, VoiceError } from "./voice.ts";
 import { buildInstructions, TOOLS } from "./prompt.ts";
 
 export interface Env {
@@ -33,6 +36,10 @@ export interface Env {
   MUSE_API_KEY: string;
   /** Optional override of the agent model (e.g. a faster Muse Spark model). */
   AGENT_MODEL?: string;
+  /** Wit.ai server access token for the glasses' voice; without it the lens falls back to the browser's voices. */
+  WIT_TOKEN?: string;
+  /** Wit.ai voice name. */
+  WIT_VOICE?: string;
 }
 
 /** Paid model calls per hour across everyone: a cap on what a public demo can spend. */
@@ -48,19 +55,27 @@ const enc = new TextEncoder();
 // ------------------------------------------------------------------ entry
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
-    const url = new URL(request.url);
-    if (!url.pathname.startsWith("/api/")) return env.ASSETS.fetch(request);
-    try {
-      return await api(request, env, url);
-    } catch (e) {
-      console.error("api error", e);
-      return json({ error: "Something went wrong. Try again." }, 500);
-    }
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    if (!new URL(request.url).pathname.startsWith("/api/")) return env.ASSETS.fetch(request);
+    return handleApi(request, env, ctx);
   },
 };
 
-async function api(request: Request, env: Env, url: URL): Promise<Response> {
+/**
+ * Every /api/* request. This Worker serves it locally; when deployed, the
+ * Pages site serves it from a Pages Function (pages/functions/api), with the
+ * Durable Objects bound from this Worker.
+ */
+export async function handleApi(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+  try {
+    return await api(request, env, new URL(request.url), ctx);
+  } catch (e) {
+    console.error("api error", e);
+    return json({ error: "Something went wrong. Try again." }, 500);
+  }
+}
+
+async function api(request: Request, env: Env, url: URL, ctx: ExecutionContext): Promise<Response> {
   const parts = url.pathname.split("/").filter(Boolean); // ["api", ...]
   const route = parts[1];
 
@@ -81,6 +96,21 @@ async function api(request: Request, env: Env, url: URL): Promise<Response> {
       return json({ text: await transcribe(env.MUSE_API_KEY, audio.buffer as ArrayBuffer) });
     } catch (e) {
       return json({ error: e instanceof MuseError ? e.message : "Transcription failed" }, 502);
+    }
+  }
+
+  if (route === "speak" && parts.length === 2) {
+    if (request.method !== "POST") return json({ error: "method not allowed" }, 405);
+    if (!env.WIT_TOKEN) return json({ error: "No voice configured" }, 503);
+    const tooMany = await limited(env, request, "speech");
+    if (tooMany) return tooMany;
+    const body = (await request.json().catch(() => null)) as { text?: unknown } | null;
+    const text = typeof body?.text === "string" ? body.text.replace(/\s+/g, " ").trim().slice(0, MAX_SPEECH_CHARS) : "";
+    if (!text) return json({ error: "Nothing to say" }, 400);
+    try {
+      return await speak(env.WIT_TOKEN, env.WIT_VOICE || "wit$Rebecca", text, ctx);
+    } catch (e) {
+      return json({ error: e instanceof VoiceError ? e.message : "Speech failed" }, 502);
     }
   }
 
@@ -166,8 +196,11 @@ async function agent(request: Request, env: Env): Promise<Response> {
       store: false,
     });
     const out: AgentResponse = {
-      // Only tools that exist reach the app.
-      calls: result.calls.filter((c) => (TOOL_NAMES as readonly string[]).includes(c.name)),
+      // Only tools that exist reach the app. Menu paths come from the camera's
+      // menu map, never from the model: the screens and steps are filled in here.
+      calls: result.calls
+        .filter((c) => (TOOL_NAMES as readonly string[]).includes(c.name))
+        .map((c) => (c.name === "menu_steps" ? { ...c, arguments: rewriteMenuSteps(c.arguments, ctx.camera) } : c)),
       text: result.text,
       commentary: result.commentary,
     };
@@ -257,6 +290,7 @@ const RATE_LIMITS = {
   connect: [300, 600], // WebSocket / SSE connections
   send: [600, 600], // SSE-fallback messages
   voice: [60, 600], // transcriptions
+  speech: [300, 600], // lines spoken on the glasses
   say: [120, 600], // dictated instructions from the glasses
   pattern: [30, 600], // phones asking for a pairing pattern
   pair: [30, 600], // glasses swiping a pattern (stops pattern guessing)
@@ -535,6 +569,7 @@ function cleanHud(raw: unknown): HudState | null {
   const phase = phases.find((p) => p === raw.phase) ?? "idle";
   const shots = isObj(raw.shots) ? raw.shots : {};
   const q = isObj(raw.question) ? raw.question : null;
+  const g = isObj(raw.guide) ? raw.guide : null;
   const thumb = typeof raw.thumb === "string" && raw.thumb.startsWith("data:image/jpeg;base64,") && raw.thumb.length <= HUD_THUMB_BYTES ? raw.thumb : null;
   return {
     phase,
@@ -548,6 +583,9 @@ function cleanHud(raw: unknown): HudState | null {
     summary: text(raw.summary, 700),
     question: q && text(q.text, 140)
       ? { text: text(q.text, 140)!, options: Array.isArray(q.options) ? q.options.slice(0, 4).map((o) => text(o, 40) ?? "").filter(Boolean) : [] }
+      : null,
+    guide: g && text(g.setting, 60)
+      ? { setting: text(g.setting, 60)!, steps: Array.isArray(g.steps) ? g.steps.slice(0, 8).map((st) => text(st, 80) ?? "").filter(Boolean) : [], menu: cleanMenu(g.menu) }
       : null,
   };
 }
