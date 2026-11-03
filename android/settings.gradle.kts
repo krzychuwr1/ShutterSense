@@ -12,5 +12,5 @@ dependencyResolutionManagement {
         mavenCentral()
     }
 }
-rootProject.name = "SecondShooter"
+rootProject.name = "ShutterSense"
 include(":app")

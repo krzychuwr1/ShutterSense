@@ -1,7 +1,7 @@
 <resources>
-    <style name="Theme.SecondShooter" parent="android:Theme.Material.NoActionBar">
+    <style name="Theme.ShutterSense" parent="android:Theme.Material.NoActionBar">
         <item name="android:windowBackground">@color/background</item>
     </style>
-    <color name="background">#0F1114</color>
-    <color name="icon_background">#15181C</color>
+    <color name="background">#09090B</color>
+    <color name="icon_background">#111114</color>
 </resources>
