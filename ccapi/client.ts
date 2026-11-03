@@ -97,6 +97,20 @@ export interface FileInfo {
 
 export type FileKind = "main" | "display" | "thumbnail" | "embedded";
 
+export type RegisteredName = "copyright" | "author" | "ownername" | "nickname";
+
+/** Functions that hold one text field, named after the path's last part. */
+export type TextFunction =
+  | `registeredname/${RegisteredName}`
+  | "cors/origin"
+  | "ssl/servercert/commonname"
+  | "filename/stills/usersetting1"
+  | "filename/stills/usersetting2"
+  | "filename/movies/index"
+  | "filename/movies/userdefined";
+
+export type NetworkSettingKind = "commsetting" | "functionsetting" | "connectionsetting";
+
 export interface LiveRect {
   positionx: number;
   positiony: number;
@@ -144,6 +158,8 @@ type Method = "get" | "post" | "put" | "delete";
 const versionNumber = (v: string) => Number(v.replace(/^ver/, "")) || 0;
 
 /** "/ccapi/ver110/shooting/settings/shootingmode" -> ["ver110", "shooting/settings/shootingmode"]. */
+const lastPart = (name: string) => name.slice(name.lastIndexOf("/") + 1);
+
 function splitPath(path: string): [string, string] | null {
   const m = path.match(/^\/ccapi\/(ver\d+)\/(.+?)\/?$/);
   return m ? [m[1], m[2]] : null;
@@ -171,6 +187,8 @@ export function fetchTransport(base: string, init: { fetch?: typeof fetch; heade
 export class CcapiClient {
   /** Endpoint key (path after the version) -> its endpoints, highest version first. */
   private endpoints = new Map<string, Endpoint[]>();
+  /** Whether the network setting routes (listed apart, by functions/networksetting) have been read. */
+  private networkListed = false;
   private transport: Transport;
 
   constructor(transport: Transport) {
@@ -209,6 +227,13 @@ export class CcapiClient {
       data = await this.callJson("GET", "/ccapi/ver100/topurlfordev");
     }
     this.endpoints.clear();
+    this.networkListed = false;
+    this.addEndpoints(data);
+    if (!this.endpoints.size) throw new CcapiError(0, "The camera listed no API endpoints", "/ccapi");
+  }
+
+  /** Adds the routes of an endpoint list ({ver100: [{path, get, …}], …}), highest version first. */
+  private addEndpoints(data: Record<string, unknown>) {
     for (const [version, list] of Object.entries(data)) {
       if (!/^ver\d+$/.test(version) || !Array.isArray(list)) continue;
       for (const raw of list as Array<Record<string, unknown> | null>) {
@@ -226,12 +251,11 @@ export class CcapiClient {
         if (!parts) continue;
         const ep: Endpoint = { version: parts[0], path: `/ccapi/${parts[0]}/${parts[1]}`, get: !!raw.get, post: !!raw.post, put: !!raw.put, delete: !!raw.delete };
         const eps = this.endpoints.get(parts[1]) ?? [];
-        eps.push(ep);
+        if (!eps.some((e) => e.path === ep.path)) eps.push(ep);
         this.endpoints.set(parts[1], eps);
       }
     }
     for (const eps of this.endpoints.values()) eps.sort((a, b) => versionNumber(b.version) - versionNumber(a.version));
-    if (!this.endpoints.size) throw new CcapiError(0, "The camera listed no API endpoints", "/ccapi");
   }
 
   /** The highest-version path for `key` that supports `method`, or null. */
@@ -397,15 +421,32 @@ export class CcapiClient {
     await this.postFunction("cardformat", { name });
   }
 
+  /**
+   * A text function, answered as {<last part of its name>: text}: cors/origin,
+   * ssl/servercert/commonname, registeredname/<field>,
+   * filename/stills/usersetting1 or usersetting2, filename/movies/index or userdefined.
+   */
+  async functionText(name: TextFunction): Promise<string> {
+    const v = (await this.getFunction<Record<string, unknown>>(name))[lastPart(name)];
+    return typeof v === "string" ? v : "";
+  }
+  async setFunctionText(name: TextFunction, value: string): Promise<void> {
+    await this.putFunction(name, { [lastPart(name)]: value });
+  }
+  /** Clears it, where the camera allows that (registered names, the CORS origin, the HTTPS common name). */
+  async clearFunctionText(name: TextFunction): Promise<void> {
+    await this.deleteFunction(name);
+  }
+
   /** copyright, author, ownername or nickname. */
-  async registeredName(field: "copyright" | "author" | "ownername" | "nickname"): Promise<string> {
-    return (await this.getFunction<Record<string, string>>(`registeredname/${field}`))[field] ?? "";
+  registeredName(field: RegisteredName): Promise<string> {
+    return this.functionText(`registeredname/${field}`);
   }
-  async setRegisteredName(field: "copyright" | "author" | "ownername" | "nickname", value: string): Promise<void> {
-    await this.putFunction(`registeredname/${field}`, { [field]: value });
+  setRegisteredName(field: RegisteredName, value: string): Promise<void> {
+    return this.setFunctionText(`registeredname/${field}`, value);
   }
-  async clearRegisteredName(field: "copyright" | "author" | "ownername" | "nickname"): Promise<void> {
-    await this.deleteFunction(`registeredname/${field}`);
+  clearRegisteredName(field: RegisteredName): Promise<void> {
+    return this.clearFunctionText(`registeredname/${field}`);
   }
 
   /** Cleans the sensor; with autoPowerOff the camera switches off afterwards (the connection ends). */
@@ -440,6 +481,53 @@ export class CcapiClient {
   }
   deleteWifiSetting(set: "set1" | "set2" | "set3") {
     return this.deleteFunction<Record<string, string>>(`wifisetting/${set}`);
+  }
+
+  /** The connection setting of bodies without stored sets (LAN type, SSID, method, addresses). */
+  connectSetting() {
+    return this.getFunction<Record<string, string>>("connectsetting");
+  }
+  setConnectSetting(setting: Record<string, string>) {
+    return this.putFunction<Record<string, string>>("connectsetting", setting);
+  }
+
+  // Bodies with wired and wireless networks keep several setups: communication
+  // settings (nw01…: LAN type, SSID, addresses), function settings (mode01…:
+  // what a connection is for, e.g. "ccapi") and connection settings (set01…:
+  // one of each). Wi-Fi-only bodies have none of these; they use wifiSetting().
+
+  /** All stored settings of one kind, keyed nw01…, mode01… or set01…. */
+  async networkSettings(kind: NetworkSettingKind) {
+    await this.networkRoutes();
+    return this.getFunction<Record<string, Record<string, unknown>>>(`networksetting/${kind}`);
+  }
+  async networkSetting(kind: NetworkSettingKind, id: string) {
+    await this.networkRoutes();
+    return this.getFunction<Record<string, unknown>>(`networksetting/${kind}/${id}`);
+  }
+  async setNetworkSetting(kind: NetworkSettingKind, id: string, setting: Record<string, unknown>) {
+    await this.networkRoutes();
+    return this.putFunction<Record<string, unknown>>(`networksetting/${kind}/${id}`, setting);
+  }
+  async deleteNetworkSetting(kind: NetworkSettingKind, id: string) {
+    await this.networkRoutes();
+    return this.deleteFunction<Record<string, unknown>>(`networksetting/${kind}/${id}`);
+  }
+  /** The connection setting in use (set01…), as {value, ability}; only sets started over this API can be picked. */
+  async currentConnectionSetting(): Promise<SettingItem> {
+    await this.networkRoutes();
+    return this.functionSetting("networksetting/currentconnectionsetting");
+  }
+  async setCurrentConnectionSetting(set: string): Promise<void> {
+    await this.networkRoutes();
+    await this.setFunction("networksetting/currentconnectionsetting", set);
+  }
+
+  /** The network setting routes aren't in the main list: functions/networksetting lists them. */
+  private async networkRoutes(): Promise<void> {
+    if (this.networkListed) return;
+    this.addEndpoints(await this.getFunction("networksetting"));
+    this.networkListed = true;
   }
 
   /** The HTTPS root certificate (application/x-x509-user-cert). */

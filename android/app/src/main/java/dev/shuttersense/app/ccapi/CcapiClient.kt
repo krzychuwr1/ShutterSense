@@ -111,6 +111,9 @@ class CcapiClient(private val transport: CcapiTransport) {
     /** Endpoint key (path after the version) -> endpoints, highest version first. */
     private val endpoints = mutableMapOf<String, List<Endpoint>>()
 
+    /** Whether the network setting routes (listed apart, by functions/networksetting) have been read. */
+    @Volatile private var networkListed = false
+
     // ---------------------------------------------------------------- plumbing
 
     private fun failure(status: Int, body: ByteArray, path: String): CcapiException {
@@ -154,6 +157,13 @@ class CcapiClient(private val transport: CcapiTransport) {
             callObject("GET", "/ccapi/ver100/topurlfordev")
         }
         endpoints.clear()
+        networkListed = false
+        addEndpoints(data)
+        if (endpoints.isEmpty()) throw CcapiException(0, "The camera listed no API endpoints", "/ccapi")
+    }
+
+    /** Adds the routes of an endpoint list ({ver100: [{path, get, …}], …}), highest version first. */
+    private fun addEndpoints(data: JsonObject) {
         val found = mutableMapOf<String, MutableList<Endpoint>>()
         for ((version, list) in data) {
             if (!VERSION.matches(version) || list !is JsonArray) continue
@@ -176,8 +186,10 @@ class CcapiClient(private val transport: CcapiTransport) {
                     .add(Endpoint(ver, "/ccapi/$ver/$key", flag("get"), flag("post"), flag("put"), flag("delete")))
             }
         }
-        for ((k, v) in found) endpoints[k] = v.sortedByDescending { versionNumber(it.version) }
-        if (endpoints.isEmpty()) throw CcapiException(0, "The camera listed no API endpoints", "/ccapi")
+        for ((k, v) in found) {
+            val known = endpoints[k].orEmpty()
+            endpoints[k] = (known + v.filter { e -> known.none { it.path == e.path } }).sortedByDescending { versionNumber(it.version) }
+        }
     }
 
     /** The highest-version path for [key] that supports [method], or null. */
@@ -317,14 +329,24 @@ class CcapiClient(private val transport: CcapiTransport) {
         postFunction("cardformat", body("name" to name))
     }
 
+    /**
+     * A text function, answered as {<last part of its name>: text}: cors/origin,
+     * ssl/servercert/commonname, registeredname/<field>,
+     * filename/stills/usersetting1 or usersetting2, filename/movies/index or userdefined.
+     */
+    suspend fun functionText(name: String): String = getFunction(name).str(name.substringAfterLast('/')) ?: ""
+    suspend fun setFunctionText(name: String, value: String) {
+        putFunction(name, body(name.substringAfterLast('/') to value))
+    }
+    /** Clears it, where the camera allows that (registered names, the CORS origin, the HTTPS common name). */
+    suspend fun clearFunctionText(name: String) {
+        deleteFunction(name)
+    }
+
     /** [field]: copyright, author, ownername or nickname. */
-    suspend fun registeredName(field: String): String = getFunction("registeredname/$field").str(field) ?: ""
-    suspend fun setRegisteredName(field: String, value: String) {
-        putFunction("registeredname/$field", body(field to value))
-    }
-    suspend fun clearRegisteredName(field: String) {
-        deleteFunction("registeredname/$field")
-    }
+    suspend fun registeredName(field: String): String = functionText("registeredname/$field")
+    suspend fun setRegisteredName(field: String, value: String) = setFunctionText("registeredname/$field", value)
+    suspend fun clearRegisteredName(field: String) = clearFunctionText("registeredname/$field")
 
     /** Cleans the sensor; with [autoPowerOff] the camera switches off afterwards (the connection ends). */
     suspend fun sensorCleaning(autoPowerOff: Boolean) {
@@ -351,6 +373,50 @@ class CcapiClient(private val transport: CcapiTransport) {
     suspend fun wifiSetting(set: String): JsonObject = getFunction("wifisetting/$set")
     suspend fun setWifiSetting(set: String, setting: Map<String, String>): JsonObject = putFunction("wifisetting/$set", toJson(setting))
     suspend fun deleteWifiSetting(set: String): JsonObject = deleteFunction("wifisetting/$set")
+
+    /** The connection setting of bodies without stored sets (LAN type, SSID, method, addresses). */
+    suspend fun connectSetting(): JsonObject = getFunction("connectsetting")
+    suspend fun setConnectSetting(setting: Map<String, String>): JsonObject = putFunction("connectsetting", toJson(setting))
+
+    // Bodies with wired and wireless networks keep several setups: communication
+    // settings (nw01…: LAN type, SSID, addresses), function settings (mode01…:
+    // what a connection is for, e.g. "ccapi") and connection settings (set01…:
+    // one of each). Wi-Fi-only bodies have none of these; they use wifiSetting().
+    // [kind]: "commsetting", "functionsetting" or "connectionsetting".
+
+    /** All stored settings of one kind, keyed nw01…, mode01… or set01…. */
+    suspend fun networkSettings(kind: String): JsonObject {
+        networkRoutes()
+        return getFunction("networksetting/$kind")
+    }
+    suspend fun networkSetting(kind: String, id: String): JsonObject {
+        networkRoutes()
+        return getFunction("networksetting/$kind/$id")
+    }
+    suspend fun setNetworkSetting(kind: String, id: String, setting: JsonObject): JsonObject {
+        networkRoutes()
+        return putFunction("networksetting/$kind/$id", setting)
+    }
+    suspend fun deleteNetworkSetting(kind: String, id: String): JsonObject {
+        networkRoutes()
+        return deleteFunction("networksetting/$kind/$id")
+    }
+    /** The connection setting in use (set01…), as {value, ability}; only sets started over this API can be picked. */
+    suspend fun currentConnectionSetting(): SettingItem {
+        networkRoutes()
+        return functionSetting("networksetting/currentconnectionsetting")
+    }
+    suspend fun setCurrentConnectionSetting(set: String) {
+        networkRoutes()
+        setFunction("networksetting/currentconnectionsetting", set)
+    }
+
+    /** The network setting routes aren't in the main list: functions/networksetting lists them. */
+    private suspend fun networkRoutes() {
+        if (networkListed) return
+        addEndpoints(getFunction("networksetting"))
+        networkListed = true
+    }
 
     /** The HTTPS root certificate (application/x-x509-user-cert). */
     suspend fun caCertificate(): ByteArray = call("GET", need("functions/ssl/cacert", "get")).body

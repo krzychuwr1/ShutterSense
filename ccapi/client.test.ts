@@ -215,6 +215,67 @@ test("functions, device status and events through the client", async () => {
   await assert.rejects(client.stopMonitoring(), (e: unknown) => e instanceof CcapiError && e.message === "Not started");
 });
 
+test("text functions on the simulator: CORS origin and file name parts", async () => {
+  const { client } = await fastSetup();
+  await client.setFunctionText("cors/origin", "https://example.test");
+  assert.equal(await client.functionText("cors/origin"), "https://example.test");
+  await client.clearFunctionText("cors/origin");
+  assert.equal(await client.functionText("cors/origin"), "");
+  await client.setFunctionText("filename/movies/index", "B_");
+  assert.equal(await client.functionText("filename/movies/index"), "B_");
+  // The simulated body is HTTP only: no server certificate.
+  await assert.rejects(client.functionText("ssl/servercert/commonname"), (e: unknown) => e instanceof CcapiError && e.status === 404);
+});
+
+test("network settings are routed through their own endpoint list", async () => {
+  const calls: string[] = [];
+  const ep = (path: string, get: boolean, put = false, del = false) => ({ path, get, post: false, put, delete: del });
+  const routes: Record<string, unknown> = {
+    "GET /ccapi": { ver100: [ep("/ccapi/ver100/functions/connectsetting", true, true)], ver110: [ep("/ccapi/ver110/functions/networksetting", true), ep("/ccapi/ver110/functions/ssl/servercert/commonname", true, true, true)] },
+    "GET /ccapi/ver110/functions/networksetting": {
+      ver110: [
+        // The camera's own example puts a space before the path.
+        ep(" /ccapi/ver110/functions/networksetting/commsetting", true),
+        ep("/ccapi/ver110/functions/networksetting/commsetting/nw01", true, true),
+        ep("/ccapi/ver110/functions/networksetting/connectionsetting/set01", true, true, true),
+        ep("/ccapi/ver110/functions/networksetting/currentconnectionsetting", true, true),
+      ],
+    },
+    "GET /ccapi/ver110/functions/networksetting/commsetting": { nw01: { lantype: "ether", ipv4_ipaddress: "192.168.1.2" } },
+    "PUT /ccapi/ver110/functions/networksetting/commsetting/nw01": { lantype: "ether" },
+    "DELETE /ccapi/ver110/functions/networksetting/connectionsetting/set01": {},
+    "GET /ccapi/ver110/functions/networksetting/currentconnectionsetting": { value: "set01", ability: ["set01", "set02"] },
+    "PUT /ccapi/ver110/functions/networksetting/currentconnectionsetting": { value: "set02" },
+    "GET /ccapi/ver100/functions/connectsetting": { lantype: "wi-fi", ssid: "CAM" },
+    "GET /ccapi/ver110/functions/ssl/servercert/commonname": { commonname: "camera.local" },
+    "PUT /ccapi/ver110/functions/ssl/servercert/commonname": { commonname: "cam" },
+  };
+  const fake: Transport = async (method, path, body) => {
+    calls.push(`${method} ${path}${body === undefined ? "" : ` ${JSON.stringify(body)}`}`);
+    const json = routes[`${method} ${path}`];
+    const status = json === undefined ? 404 : 200;
+    const out = json ?? { message: "URL not found" };
+    const bytes = new TextEncoder().encode(JSON.stringify(out));
+    return { status, contentType: "application/json", json: async () => out, bytes: async () => bytes };
+  };
+  const client = new CcapiClient(fake);
+  await client.discover();
+  assert.equal(client.has("functions/networksetting/commsetting"), false, "not in the main list");
+  assert.deepEqual(await client.networkSettings("commsetting"), { nw01: { lantype: "ether", ipv4_ipaddress: "192.168.1.2" } });
+  await client.setNetworkSetting("commsetting", "nw01", { lantype: "ether" });
+  await client.deleteNetworkSetting("connectionsetting", "set01");
+  assert.equal((await client.currentConnectionSetting()).value, "set01");
+  await client.setCurrentConnectionSetting("set02");
+  await assert.rejects(client.setCurrentConnectionSetting("set09"), (e: unknown) => e instanceof SettingError);
+  assert.equal((await client.connectSetting()).ssid, "CAM");
+  assert.equal(await client.functionText("ssl/servercert/commonname"), "camera.local");
+  await client.setFunctionText("ssl/servercert/commonname", "cam");
+  // The sub-list is read once.
+  assert.equal(calls.filter((c) => c === "GET /ccapi/ver110/functions/networksetting").length, 1);
+  assert.ok(calls.includes('PUT /ccapi/ver110/functions/networksetting/currentconnectionsetting {"value":"set02"}'));
+  assert.ok(calls.includes('PUT /ccapi/ver110/functions/ssl/servercert/commonname {"commonname":"cam"}'));
+});
+
 test("shooting control: manual focus, AF frame, movie, bursts held on the manual button", async () => {
   const { client, cam } = await fastSetup();
   await client.setAfFramePosition(100, 780);

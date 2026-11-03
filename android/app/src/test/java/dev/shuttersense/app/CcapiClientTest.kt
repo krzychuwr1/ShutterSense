@@ -625,6 +625,53 @@ class CcapiClientTest {
     }
 
     @Test
+    fun networkSettingsAreRoutedThroughTheirOwnList() = runBlocking<Unit> {
+        fun ep(path: String, put: Boolean = false, delete: Boolean = false) = """{"path":"$path","get":true,"post":false,"put":$put,"delete":$delete}"""
+        val routes = mapOf(
+            "GET /ccapi" to """{"ver100":[${ep("/ccapi/ver100/functions/connectsetting", put = true)}],""" +
+                """"ver110":[${ep("/ccapi/ver110/functions/networksetting")},${ep("/ccapi/ver110/functions/ssl/servercert/commonname", put = true, delete = true)}]}""",
+            // The camera's own example puts a space before the path.
+            "GET /ccapi/ver110/functions/networksetting" to """{"ver110":[${ep(" /ccapi/ver110/functions/networksetting/commsetting")},""" +
+                "${ep("/ccapi/ver110/functions/networksetting/commsetting/nw01", put = true)},${ep("/ccapi/ver110/functions/networksetting/connectionsetting/set01", put = true, delete = true)}," +
+                "${ep("/ccapi/ver110/functions/networksetting/currentconnectionsetting", put = true)}]}",
+            "GET /ccapi/ver110/functions/networksetting/commsetting" to """{"nw01":{"lantype":"ether","ipv4_ipaddress":"192.168.1.2"}}""",
+            "PUT /ccapi/ver110/functions/networksetting/commsetting/nw01" to """{"lantype":"ether"}""",
+            "DELETE /ccapi/ver110/functions/networksetting/connectionsetting/set01" to "{}",
+            "GET /ccapi/ver110/functions/networksetting/currentconnectionsetting" to """{"value":"set01","ability":["set01","set02"]}""",
+            "PUT /ccapi/ver110/functions/networksetting/currentconnectionsetting" to """{"value":"set02"}""",
+            "GET /ccapi/ver100/functions/connectsetting" to """{"lantype":"wi-fi","ssid":"CAM"}""",
+            "GET /ccapi/ver110/functions/ssl/servercert/commonname" to """{"commonname":"camera.local"}""",
+            "PUT /ccapi/ver110/functions/ssl/servercert/commonname" to """{"commonname":"cam"}""",
+        )
+        val seen = mutableListOf<String>()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val key = "${request.method} ${request.path}"
+                seen.add("$key ${request.body.readUtf8()}".trim())
+                val body = routes[key] ?: return MockResponse().setResponseCode(404).setBody("""{"message":"URL not found"}""")
+                return MockResponse().setHeader("content-type", "application/json").setBody(body)
+            }
+        }
+        val url = server.url("/")
+        val c = CcapiClient(CameraHttp.transport(CameraAddress(url.host, url.port)))
+        c.discover()
+        assertFalse("not in the main list", c.has("functions/networksetting/commsetting"))
+        assertEquals("ether", c.networkSettings("commsetting")["nw01"]!!.jsonObject["lantype"]!!.jsonPrimitive.content)
+        c.setNetworkSetting("commsetting", "nw01", JsonObject(mapOf("lantype" to JsonPrimitive("ether"))))
+        c.deleteNetworkSetting("connectionsetting", "set01")
+        assertEquals("set01", c.currentConnectionSetting().text)
+        c.setCurrentConnectionSetting("set02")
+        rejects<SettingException> { c.setCurrentConnectionSetting("set09") }
+        assertEquals("CAM", c.connectSetting()["ssid"]!!.jsonPrimitive.content)
+        assertEquals("camera.local", c.functionText("ssl/servercert/commonname"))
+        c.setFunctionText("ssl/servercert/commonname", "cam")
+        // The sub-list is read once.
+        assertEquals(1, seen.count { it == "GET /ccapi/ver110/functions/networksetting" })
+        assertTrue(seen.toString(), """PUT /ccapi/ver110/functions/networksetting/currentconnectionsetting {"value":"set02"}""" in seen)
+        assertTrue(seen.toString(), """PUT /ccapi/ver110/functions/ssl/servercert/commonname {"commonname":"cam"}""" in seen)
+    }
+
+    @Test
     fun contentsPageInfoRangeProtectAndDelete() = runBlocking<Unit> {
         val c = connected()
         val storage = c.storages().single()
