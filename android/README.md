@@ -32,6 +32,10 @@ Studio hasn't, then:
 ./gradlew testDebugUnitTest      # JVM tests: CCAPI client against a mock camera, value parsing
 ```
 
+For a signed release build, create `keystore.properties` next to this file
+with `storeFile`, `storePassword`, `keyAlias` and `keyPassword` (it stays out of
+git), then run `./gradlew assembleRelease`.
+
 Install with `adb install -r app/build/outputs/apk/debug/app-debug.apk`, or
 open the `android` folder in Android Studio and run it.
 

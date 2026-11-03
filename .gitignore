@@ -16,3 +16,6 @@ android/.kotlin/
 *.iml
 e2e-out/
 scene-renders/
+android/keystore.properties
+*.jks
+*.keystore

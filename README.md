@@ -48,6 +48,16 @@ This isn't a chatbot that comments on photos. It operates a mirrorless camera ov
 3. Send a correction, such as *"a bit warmer"*, or ask for *"a few other poses for her"*.
 4. **Connect simulated glasses** to see the same run on the 600×600 lens.
 
+### On an Android phone
+
+<a href="https://github.com/krzychuwr1/CameraHelper/releases/latest/download/shutter-sense.apk"><img src="docs/media/apk-qr.png" alt="QR code that downloads the Shutter Sense APK" width="160" align="right"></a>
+
+The phone app is the real agent, and **Try the demo** runs a simulated camera on the phone, so you still don't need a Canon body. It needs Android 9 or newer and an internet connection.
+
+1. [Download the APK](https://github.com/krzychuwr1/CameraHelper/releases/latest/download/shutter-sense.apk) on your phone, or scan the code.
+2. Open the file and allow installs from your browser if asked. If Play Protect doesn't recognize the developer, tap **More details**, then **Install anyway**.
+3. Open Shutter Sense, tap **Skip**, then **Try the demo**, and tap an example goal.
+
 ## How it works
 
 <p align="center">
