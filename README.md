@@ -90,3 +90,5 @@ Everything in this repository was written during the Meta Global AI Developer Ha
 The simulator's scene photographs are AI-generated, made during the hackathon. No real people are pictured.
 
 Works with Canon cameras via CCAPI. Not affiliated with or endorsed by Canon.
+
+[MIT License](LICENSE)
