@@ -59,6 +59,16 @@ The phone app is the real agent, and **Try the demo** runs a simulated camera on
 2. Open the file and allow installs from your browser if asked. If Play Protect doesn't recognize the developer, tap **More details**, then **Install anyway**.
 3. Open Shutter Sense, tap **Skip**, then **Try the demo**, and tap an example goal.
 
+### With the real hardware
+
+The demos above use a simulated camera so that anyone can try the agent. Shutter Sense itself is built for real hardware, and the full setup works: the [trailer](https://www.youtube.com/watch?v=CIH_PXiTaXg) is a real recording of the agent running a real camera. Testing it properly takes all three:
+
+- **An Android phone** with the app above, on the same Wi-Fi as the camera. Tap **Connect my camera** instead of **Try the demo**.
+- **A Canon camera with CCAPI**, activated through Canon's developer programme.
+- **Meta Ray-Ban Display** with Developer Mode on and https://shuttersense.pages.dev installed as a web app.
+
+See [docs/technical.md](docs/technical.md) for connecting the camera and pairing the glasses.
+
 ## How it works
 
 <p align="center">
