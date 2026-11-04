@@ -4,6 +4,7 @@
 
 <p align="center">
   <a href="https://shuttersense.pages.dev/try"><img alt="Try the live demo, no camera needed" src="https://img.shields.io/badge/Try_the_live_demo-no_camera_needed-3355ff?style=for-the-badge&labelColor=0a1024"></a>
+  <a href="https://www.youtube.com/watch?v=CIH_PXiTaXg"><img alt="Watch the 95-second trailer on YouTube" src="https://img.shields.io/badge/Watch_the_trailer-95_seconds-ff0033?style=for-the-badge&labelColor=0a1024"></a>
 </p>
 <p align="center">
   <img alt="Muse Wonder" src="https://img.shields.io/badge/Muse_Wonder-agent_%2B_vision-7b5cff?labelColor=0a1024">
